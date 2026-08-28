@@ -32,6 +32,18 @@ The graph lives in memory; the database is the backup.
 script hooks and recognises bots through `WorldSession::IsBot()`. An update
 to mod-playerbots therefore cannot break it.
 
+## Requirements
+
+- **AzerothCore** master branch (WotLK 3.3.5a, build 12340)
+- **mod-playerbots** ([liyunfan1223/mod-playerbots](https://github.com/liyunfan1223/mod-playerbots)) — required, must be installed first
+- MySQL/MariaDB with `acore_characters` database
+- CMake 3.16+ and a C++17 compiler
+
+**Tested on:**
+- Windows Server 2022 + MSVC 2022
+- Ubuntu 22.04 + GCC 11
+- Debian 12 + Clang 15
+
 ## Installation
 
 ```bash
@@ -153,7 +165,57 @@ reads the `bot_social_profile` table, once for all bots, refreshed every
 `ReactDelay.RefreshSeconds`. With the module absent or the switch off, the
 factor is 1.0 everywhere and behaviour is exactly as without the patch.
 
-## Known limits
+## Troubleshooting
+
+### Module doesn't load / tables not created
+
+**Symptom:** Worldserver starts but `.social stats` says "Unknown command"
+
+**Solution:**
+1. Check CMake output: `mod-bot-social` should appear in the modules list
+2. Verify the module is in `modules/mod-bot-social/` (not a nested folder)
+3. Rebuild: `cmake --build build --target clean && cmake --build build`
+4. Check worldserver log for SQL errors during startup
+
+### Bonds not forming / always zero
+
+**Symptom:** `.social stats` shows zero bonds after hours of bot activity
+
+**Solution:**
+1. Verify `BotSocial.Enable = 1` in `configs/modules/mod_bot_social.conf`
+2. Run `.reload config` in worldserver console
+3. Check `BotSocial.Gain.*` values — if all zero, nothing creates affection
+4. Verify bots are actually grouping: `.rndbot` should show bots in dungeons/raids
+
+### Patch doesn't apply
+
+**Symptom:** `git apply` fails with conflicts
+
+**Solution:**
+1. Check your mod-playerbots commit: `git log --oneline -1` in `modules/mod-playerbots/`
+2. If not `2f7d9f77` or close: use the pre-patched file instead (copy from `patches/mod-playerbots/src/Bot/PlayerbotAI.cpp`)
+3. Or manually merge: the patch adds ~80 lines in two places (see comments in patch file)
+
+### Config changes don't take effect
+
+**Symptom:** Changed `mod_bot_social.conf` but behavior unchanged
+
+**Solution:**
+1. Run `.reload config` in worldserver console (no restart needed)
+2. Check you edited `configs/modules/mod_bot_social.conf`, not the `.dist` file
+3. Verify config syntax: no quotes around numbers, `=` not `:`, no trailing commas
+
+### Performance issues with many bots
+
+**Symptom:** Worldserver lag with 500+ bots
+
+**Solution:**
+1. Increase `BotSocial.FlushInterval` (default 600s) — less frequent DB writes
+2. Raise `BotSocial.MaxBondsPerBot` only if needed (default 150 is Dunbar-optimal)
+3. Disable `BotSocial.DebugLog` in production
+4. Consider disabling `BotSocial.ReactDelay.Enable` if the patch causes issues
+
+## Known Limits
 
 - The triggers are timers, not events: recruitment, promotion and schism
   run on a clock and then look for candidates. That feels less like
@@ -202,6 +264,18 @@ Der Graph liegt im Arbeitsspeicher, die Datenbank ist die Sicherung.
 **Das Modul linkt nicht gegen mod-playerbots.** Es beobachtet nur
 Kernereignisse und erkennt Bots über `WorldSession::IsBot()`. Ein Update
 von mod-playerbots bricht es deshalb nicht.
+
+## Voraussetzungen
+
+- **AzerothCore** master-Branch (WotLK 3.3.5a, Build 12340)
+- **mod-playerbots** ([liyunfan1223/mod-playerbots](https://github.com/liyunfan1223/mod-playerbots)) — erforderlich, muss zuerst installiert sein
+- MySQL/MariaDB mit `acore_characters`-Datenbank
+- CMake 3.16+ und ein C++17-Compiler
+
+**Getestet auf:**
+- Windows Server 2022 + MSVC 2022
+- Ubuntu 22.04 + GCC 11
+- Debian 12 + Clang 15
 
 ## Installation
 
@@ -326,6 +400,56 @@ mod-playerbots erfährt dabei **nichts** von diesem Modul: es liest nur die
 Tabelle `bot_social_profile`, einmal für alle Bots, alle
 `ReactDelay.RefreshSeconds` neu. Fehlt das Modul oder ist der Schalter aus,
 ist der Faktor überall 1.0 und alles verhält sich wie ohne Patch.
+
+## Fehlerbehebung
+
+### Modul lädt nicht / Tabellen fehlen
+
+**Symptom:** Worldserver startet, aber `.social stats` sagt "Unknown command"
+
+**Lösung:**
+1. CMake-Ausgabe prüfen: `mod-bot-social` sollte in der Modulliste stehen
+2. Pfad prüfen: Modul in `modules/mod-bot-social/` (nicht verschachtelt)
+3. Neu bauen: `cmake --build build --target clean && cmake --build build`
+4. Worldserver-Log auf SQL-Fehler beim Start prüfen
+
+### Bindungen entstehen nicht / immer Null
+
+**Symptom:** `.social stats` zeigt nach Stunden Bot-Aktivität null Bindungen
+
+**Lösung:**
+1. `BotSocial.Enable = 1` in `configs/modules/mod_bot_social.conf` prüfen
+2. `.reload config` in der Worldserver-Konsole ausführen
+3. `BotSocial.Gain.*`-Werte prüfen — wenn alle Null, entsteht keine Zuneigung
+4. Prüfen, ob Bots tatsächlich in Gruppen sind: `.rndbot` sollte Bots in Instanzen zeigen
+
+### Patch lässt sich nicht anwenden
+
+**Symptom:** `git apply` schlägt mit Konflikten fehl
+
+**Lösung:**
+1. Commit von mod-playerbots prüfen: `git log --oneline -1` in `modules/mod-playerbots/`
+2. Falls nicht `2f7d9f77` oder nah dran: fertige Datei stattdessen kopieren (aus `patches/mod-playerbots/src/Bot/PlayerbotAI.cpp`)
+3. Oder manuell einpflegen: Patch fügt ~80 Zeilen an zwei Stellen ein (siehe Kommentare in Patch-Datei)
+
+### Config-Änderungen wirken nicht
+
+**Symptom:** `mod_bot_social.conf` geändert, aber Verhalten unverändert
+
+**Lösung:**
+1. `.reload config` in Worldserver-Konsole ausführen (kein Neustart nötig)
+2. Prüfen, dass `configs/modules/mod_bot_social.conf` bearbeitet wurde, nicht die `.dist`-Datei
+3. Config-Syntax prüfen: keine Anführungszeichen um Zahlen, `=` statt `:`, keine Kommata am Ende
+
+### Performance-Probleme mit vielen Bots
+
+**Symptom:** Worldserver-Lag mit 500+ Bots
+
+**Lösung:**
+1. `BotSocial.FlushInterval` erhöhen (Standard 600s) — seltener DB-Schreibvorgänge
+2. `BotSocial.MaxBondsPerBot` nur bei Bedarf erhöhen (Standard 150 ist Dunbar-optimal)
+3. `BotSocial.DebugLog` im Produktivbetrieb deaktivieren
+4. `BotSocial.ReactDelay.Enable` bei Problemen mit dem Patch deaktivieren
 
 ## Bekannte Grenzen
 
