@@ -18,7 +18,7 @@
   "categories": ["modules", "playerbots", "ai", "social"],
   "tags": ["playerbots", "social", "bots", "ai", "relationships", "guilds"],
   "license": "AGPL-3.0",
-  "icon": "Mod-Bot-Social-512.png",
+  "icon": "icon.png",
   "screenshots": [],
   "dependencies": {
     "required": ["mod-playerbots"],
