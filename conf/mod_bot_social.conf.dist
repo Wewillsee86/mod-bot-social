@@ -1,0 +1,499 @@
+###############################################################################
+# mod-bot-social
+#
+#   Bots merken sich, mit wem sie gespielt haben, und handeln danach.
+#
+#   Wie es funktioniert: jedes Mal wenn zwei Charaktere zusammen in einer
+#   Gruppe stecken, steigt ihre Bindung ("affinity"). Beitreten gibt einen
+#   kleinen Sockel, jede gemeinsame Minute etwas dazu, eine gemeinsame
+#   Instanz deutlich mehr. Aus diesen Werten entstehen dann Freundschaften,
+#   Gildeneinladungen und Beförderungen.
+#
+#   Das Modul greift nicht in mod-playerbots ein. Es beobachtet nur
+#   Kernereignisse und überlebt deshalb ein Update von mod-playerbots.
+#
+###############################################################################
+
+#
+#   BotSocial.Enable
+#       Hauptschalter. Steht bewusst auf 0 — schalte ihn erst an, wenn
+#       die Tabellen angelegt sind (passiert beim ersten Serverstart
+#       nach der Installation).
+#       Default: 0
+#
+BotSocial.Enable = 0
+
+#
+#   BotSocial.DebugLog
+#       Schreibt jede geschriebene Bindung, jede Werbung und jede
+#       Beförderung ins Serverlog. Zum Zuschauen in der ersten Woche
+#       sinnvoll, danach ausschalten.
+#       Default: 0
+#
+BotSocial.DebugLog = 0
+
+###############################################################################
+# BINDUNGEN
+###############################################################################
+
+#
+#   BotSocial.Gain.GroupJoin
+#       Bindungspunkte, sobald zwei in derselben Gruppe landen.
+#       Default: 2
+#
+BotSocial.Gain.GroupJoin = 2
+
+#
+#   BotSocial.Gain.PerMinute
+#       Punkte je gemeinsamer Minute in der Gruppe. Wird beim Verlassen
+#       der Gruppe abgerechnet, nicht laufend.
+#       Default: 1
+#
+BotSocial.Gain.PerMinute = 1
+
+#
+#   BotSocial.Gain.MaxMinutesPerStint
+#       Deckel für eine einzelne gemeinsame Sitzung. Verhindert, dass
+#       eine über Nacht stehengelassene Gruppe zwei Bots zu
+#       Seelenverwandten macht.
+#       Default: 60
+#
+BotSocial.Gain.MaxMinutesPerStint = 60
+
+#
+#   BotSocial.Gain.Dungeon
+#       Punkte, wenn eine Gruppe gemeinsam eine Instanz betritt.
+#       Default: 15
+#
+BotSocial.Gain.Dungeon = 15
+
+#
+#   BotSocial.Gain.Battleground
+#       Punkte für ein gemeinsames Schlachtfeld.
+#       Default: 8
+#
+BotSocial.Gain.Battleground = 8
+
+#
+#   BotSocial.Decay.IntervalHours
+#       Wie oft überhaupt vergessen wird. Wie viel dabei verfällt,
+#       steht weiter unten unter MENSCHLICHE EIGENHEITEN — dort
+#       verfallen Freundschaft und Groll unterschiedlich schnell.
+#       Default: 24
+#
+BotSocial.Decay.IntervalHours = 24
+
+#
+#   BotSocial.FlushInterval
+#       Sekunden zwischen zwei Schreibvorgängen in die Datenbank.
+#       Bindungen werden im Speicher gesammelt und gebündelt
+#       geschrieben — höher heißt weniger Datenbanklast, aber im
+#       Absturzfall gehen bis zu so viele Sekunden verloren.
+#       Default: 60
+#
+BotSocial.FlushInterval = 60
+
+###############################################################################
+# FREUNDESLISTE
+###############################################################################
+
+#
+#   BotSocial.Friends.Enable
+#       Bots tragen sich gegenseitig in die Freundesliste ein, sobald
+#       die Bindung stark genug ist. Nutzt das eingebaute WoW-System,
+#       ist also auch im Spiel sichtbar.
+#       Default: 1
+#
+BotSocial.Friends.Enable = 1
+
+#
+#   BotSocial.Friends.Threshold
+#       Ab welchem Bindungswert. Grob: zwei Bots, die dreimal
+#       zusammen einen Dungeon gelaufen sind, kommen hier an.
+#       Default: 60
+#
+BotSocial.Friends.Threshold = 60
+
+###############################################################################
+# GILDEN
+###############################################################################
+
+#
+#   BotSocial.Recruit.Enable
+#       Bot-Gilden laden weitere Bots ein, statt bei den zehn
+#       Gründungsmitgliedern stehenzubleiben. Eingeladen wird, wer die
+#       stärkste Bindung zu jemandem in der Gilde hat.
+#       Default: 1
+#
+BotSocial.Recruit.Enable = 1
+
+#
+#   BotSocial.Recruit.Interval
+#       Sekunden zwischen zwei Werbungsrunden.
+#       Default: 300
+#
+BotSocial.Recruit.Interval = 300
+
+#
+#   BotSocial.Recruit.PerTick
+#       Wie viele Einladungen pro Runde serverweit ausgesprochen
+#       werden. Niedrig halten — Gilden sollen wachsen, nicht in einer
+#       Minute volllaufen.
+#       Default: 2
+#
+BotSocial.Recruit.PerTick = 2
+
+#
+#   BotSocial.Recruit.GuildCooldown
+#       Sekunden, die eine einzelne Gilde nach einer Einladung wartet.
+#       Default: 900
+#
+BotSocial.Recruit.GuildCooldown = 900
+
+#
+#   BotSocial.Recruit.TargetSizeMin / TargetSizeMax
+#       Jede Gilde würfelt sich beim ersten Sehen eine eigene
+#       Wunschgröße aus diesem Bereich. Deshalb gibt es kleine
+#       Freundeskreise und große Sammelbecken nebeneinander, statt
+#       überall dieselbe Zahl.
+#       Default: 12 / 45
+#
+BotSocial.Recruit.TargetSizeMin = 12
+BotSocial.Recruit.TargetSizeMax = 45
+
+#
+#   BotSocial.Recruit.MinAffinity
+#       Nötige Bindung, um über Bekanntschaft rekrutiert zu werden.
+#       Default: 25
+#
+BotSocial.Recruit.MinAffinity = 25
+
+#
+#   BotSocial.Recruit.AllowStrangers
+#       Wenn niemand Passendes bekannt ist: trotzdem einen Fremden
+#       aufnehmen? Auf 0 wachsen Gilden ausschließlich über echte
+#       Bekanntschaften — deutlich langsamer, dafür hat am Ende jedes
+#       Mitglied eine Geschichte.
+#       Default: 1
+#
+BotSocial.Recruit.AllowStrangers = 1
+
+#
+#   BotSocial.Ranks.Enable / PromoteAffinity / Interval
+#       Wer viel mit seinen Gildenkameraden spielt, steigt im Rang.
+#       PromoteAffinity ist die Summe aller Bindungen innerhalb der
+#       eigenen Gilde, ab der eine Beförderung fällig wird. Gildenmeister
+#       und Offiziere (Rang 0 und 1) werden nie angetastet.
+#       Default: 1 / 150 / 3600
+#
+BotSocial.Ranks.Enable = 1
+BotSocial.Ranks.PromoteAffinity = 150
+BotSocial.Ranks.Interval = 3600
+
+###############################################################################
+# ERKENNUNG
+###############################################################################
+
+#
+#   BotSocial.AuthDatabaseName / BotSocial.BotAccountPrefix
+#       Womit das Modul beim Serverstart erkennt, welche Gilden von
+#       Bots geführt werden. Muss zu deiner Auth-Datenbank und zu
+#       AiPlayerbot.RandomBotAccountPrefix passen.
+#       Default: acore_auth / RNDBOT
+#
+BotSocial.AuthDatabaseName = "acore_auth"
+BotSocial.BotAccountPrefix = "RNDBOT"
+
+###############################################################################
+# STREIT
+#
+#   Die Werte unten sind Startwerte, keine Wahrheit. Wir justieren sie,
+#   sobald echte Zahlen da sind — schau dir dafür `.social grudges`
+#   und `.social stats` an.
+#
+###############################################################################
+
+#
+#   BotSocial.Conflict.Enable
+#       Hauptschalter für alles Negative. Auf 0 sammeln Bots nur
+#       positive Bindungen wie vorher.
+#       Default: 1
+#
+BotSocial.Conflict.Enable = 1
+
+#
+#   BotSocial.Conflict.Kicked / .KickedLfg
+#       Aus der Gruppe geworfen zu werden ist der härteste Bruch. Der
+#       Groll richtet sich gegen den, der geworfen hat — nicht gegen
+#       die Gruppe. Ein Abstimmungskick im Dungeonfinder wiegt mehr,
+#       weil sich mehrere gegen einen gestellt haben.
+#       Default: 40 / 55
+#
+BotSocial.Conflict.Kicked = 40
+BotSocial.Conflict.KickedLfg = 55
+
+#
+#   BotSocial.Conflict.Bailed
+#       Mitten in der Instanz aussteigen. Trifft alle Verbliebenen.
+#       Default: 25
+#
+BotSocial.Conflict.Bailed = 25
+
+#
+#   BotSocial.Conflict.NinjaLoot
+#       Bedarf gewürfelt und gewonnen. Alle anderen in der Gruppe
+#       nehmen es übel — ob zu Recht, weiß der Server nicht, und
+#       Menschen wissen es meistens auch nicht.
+#       Default: 35
+#
+BotSocial.Conflict.NinjaLoot = 35
+
+#
+#   BotSocial.Conflict.GuildKick
+#       Aus der Gilde geworfen. Groll gegen den Gildenmeister.
+#       Default: 60
+#
+BotSocial.Conflict.GuildKick = 60
+
+#
+#   BotSocial.Conflict.BankDrain / .BankDrainCopper
+#       Wer mehr als BankDrainCopper aus der Gildenbank nimmt, macht
+#       sich bei allen Mitgliedern ein Stück unbeliebter. 500000 sind
+#       50 Gold.
+#       Default: 8 / 500000
+#
+BotSocial.Conflict.BankDrain = 8
+BotSocial.Conflict.BankDrainCopper = 500000
+
+#
+#   BotSocial.Conflict.Gank / .GankLevelGap
+#       Ein fairer Kampf ist kein Grund für Groll. Erst ab
+#       GankLevelGap Stufen Unterschied zählt es als Ganking.
+#       Default: 20 / 8
+#
+BotSocial.Conflict.Gank = 20
+BotSocial.Conflict.GankLevelGap = 8
+
+#
+#   BotSocial.Conflict.DuelLoss
+#       Ein Stich, kein Groll. Reicht für einen Spruch im Chat.
+#       Default: 2
+#
+BotSocial.Conflict.DuelLoss = 2
+
+###############################################################################
+# MENSCHLICHE EIGENHEITEN
+###############################################################################
+
+#
+#   BotSocial.FirstImpressions / .FirstImpressionMultiplier
+#       Die ersten Begegnungen zählen mehrfach. Wer beim ersten
+#       gemeinsamen Dungeon abhaut, hat sich seinen Ruf verspielt,
+#       bevor er eine Chance hatte.
+#       Default: 3 / 2
+#
+BotSocial.FirstImpressions = 3
+BotSocial.FirstImpressionMultiplier = 2
+
+#
+#   BotSocial.ArchetypeClashPenalty
+#       Kleiner Dauerabzug, wenn zwei unpassende Spielertypen
+#       zusammen unterwegs sind — der Ehrgeizige und der
+#       Gelegenheitsspieler zum Beispiel. 0 schaltet es ab.
+#       Default: 2
+#
+BotSocial.ArchetypeClashPenalty = 2
+
+#
+#   BotSocial.Decay.Positive / .Negative / .NegativeDivisor
+#       Freundschaften verblassen ohne Kontakt. Kränkungen halten
+#       sich hartnäckiger: Groll verfällt nur jede NegativeDivisor-te
+#       Runde. Auf 1 gesetzt vergisst man Streit genauso schnell wie
+#       Freundschaft — das fühlt sich falsch an, probier es ruhig aus.
+#       Default: 1 / 1 / 3
+#
+BotSocial.Decay.Positive = 1
+BotSocial.Decay.Negative = 1
+BotSocial.Decay.NegativeDivisor = 3
+
+#
+#   BotSocial.MaxBondsPerBot
+#       Niemand kennt achthundert Leute. Über diesem Wert fallen die
+#       schwächsten Bindungen aus dem Gedächtnis — Freunde und
+#       Ignorierte bleiben. Das ist zugleich der Schutz davor, dass
+#       die Tabelle quadratisch wächst.
+#       Default: 50
+#
+BotSocial.MaxBondsPerBot = 50
+
+###############################################################################
+# SICHTBARE FOLGEN
+###############################################################################
+
+#
+#   BotSocial.Avoid.Enable / .Threshold
+#       Unter diesem Wert lehnt ein Bot Gruppeneinladungen des
+#       anderen ab und lädt ihn selbst nicht ein. Der stillste und
+#       wirksamste Mechanismus im ganzen System.
+#       Default: 1 / -30
+#
+BotSocial.Avoid.Enable = 1
+BotSocial.Avoid.Threshold = -30
+
+#
+#   BotSocial.Ignore.Enable / .Threshold
+#       Unter diesem Wert landet der andere auf der echten
+#       Ignorieren-Liste. Wird wieder aufgehoben, wenn sich der Wert
+#       erholt — die Erinnerung bleibt trotzdem.
+#       Default: 1 / -90
+#
+BotSocial.Ignore.Enable = 1
+BotSocial.Ignore.Threshold = -90
+
+###############################################################################
+# DU
+###############################################################################
+
+#
+#   BotSocial.Player.Enable
+#       Bots merken sich auch, was du tust. Auf 0 bist du für das
+#       System unsichtbar.
+#       Default: 1
+#
+BotSocial.Player.Enable = 1
+
+#
+#   BotSocial.Player.CanBeIgnored
+#       Ob Bots dich auf die Ignorieren-Liste setzen dürfen. Steht
+#       bewusst auf 0: von achthundert Bots dauerhaft geschnitten zu
+#       werden wäre kein Realismus, sondern ein kaputtes Spiel.
+#       Default: 0
+#
+BotSocial.Player.CanBeIgnored = 0
+
+#
+#   BotSocial.Player.GrudgeFadeSpeedup
+#       Um wie viel schneller Groll gegen dich verfällt.
+#       Default: 2
+#
+BotSocial.Player.GrudgeFadeSpeedup = 2
+
+###############################################################################
+# RUF
+###############################################################################
+
+#
+#   BotSocial.Reputation.Enable / .PerGrudge / .PerFavour
+#       Neben den einzelnen Bindungen hat jeder Bot einen
+#       allgemeinen Ruf. Wer dreimal Beute weggeschnappt hat, bekommt
+#       einen Namen — auch bei Leuten, die nie dabei waren. Wirkt
+#       aktuell auf die Gildenwerbung.
+#       Default: 1 / 3 / 1
+#
+BotSocial.Reputation.Enable = 1
+BotSocial.Reputation.PerGrudge = 3
+BotSocial.Reputation.PerFavour = 1
+
+#
+#   BotSocial.Recruit.MinReputation
+#       Unter diesem Ruf nimmt keine Gilde mehr jemanden auf.
+#       Default: -50
+#
+BotSocial.Recruit.MinReputation = -50
+
+###############################################################################
+# GILDENSPALTUNG
+#
+#   Wenn sich in einer Gilde eine eng verbundene Gruppe bildet, die
+#   wenig vom Gildenmeister hält, und einer davon Ehrgeiz und Rang
+#   hat, treten sie gemeinsam aus. Die neue Gilde gründen sie nicht
+#   hier — sobald sie gildenlos sind, greift die Charter-Logik von
+#   mod-playerbots. Wir machen das Drama, den Papierkram macht ein
+#   anderer.
+#
+#   Steht auf 0, bis du die ersten echten Bindungswerte gesehen hast.
+#
+###############################################################################
+
+BotSocial.Schism.Enable = 0
+BotSocial.Schism.Interval = 3600
+
+#
+#   ServerCooldown / GuildCooldown
+#       Serverweit höchstens alle 604800 Sekunden (eine Woche), pro
+#       Gilde alle 2592000 (dreißig Tage). Selten sein ist der Punkt —
+#       ständige Spaltungen sind kein Drama, sondern Rauschen.
+#
+BotSocial.Schism.ServerCooldown = 604800
+BotSocial.Schism.GuildCooldown = 2592000
+
+#
+#   LeaderDislike / CliqueBond / MinFollowers / MaxFollowers / MinGuildSize
+#       Der Rädelsführer muss den Gildenmeister unter LeaderDislike
+#       bewerten und innerhalb der Gilde mindestens CliqueBond an
+#       Bindungen gesammelt haben. Mit ihm gehen die, die ihn lieber
+#       mögen als den Gildenmeister.
+#
+BotSocial.Schism.LeaderDislike = -40
+BotSocial.Schism.CliqueBond = 120
+BotSocial.Schism.MinFollowers = 2
+BotSocial.Schism.MaxFollowers = 6
+BotSocial.Schism.MinGuildSize = 12
+
+###############################################################################
+# WEITERE GEWINNE
+###############################################################################
+
+#
+#   BotSocial.Gain.Resurrected / .Resurrector
+#       Wiederbelebt zu werden ist mehr wert, als wiederzubeleben.
+#       Diese Asymmetrie ist der Kern des Modells: aus ihr entstehen
+#       Schulden, Dankbarkeit und einseitige Sympathien.
+#       Default: 12 / 4
+#
+BotSocial.Gain.Resurrected = 12
+BotSocial.Gain.Resurrector = 4
+
+###############################################################################
+# KOENNEN PRO BOT
+###############################################################################
+
+#
+#   BotSocial.ReactDelay.Enable
+#       Macht aus dem gewuerfelten skill_tier (1..5) eine spuerbare
+#       Eigenschaft: die Reaktionszeit des Bots. Stufe 1 zoegert, Stufe 5
+#       ist flink. Gelesen wird die Tabelle bot_social_profile direkt von
+#       mod-playerbots (PlayerbotAI::GetReactDelay) - dieses Modul und
+#       mod-playerbots bleiben also voneinander unabhaengig.
+#       Bei 0 verhaelt sich jeder Bot wie vorher.
+#       Default: 0
+#
+BotSocial.ReactDelay.Enable = 0
+
+#
+#   BotSocial.ReactDelay.Tier1 .. .Tier5
+#       Faktor auf die Reaktionszeit je Stufe. Groesser als 1 heisst
+#       langsamer, kleiner als 1 heisst schneller. Die Faktoren wirken auf
+#       jeden Zustand (Kampf, Rasten, Schlachtfeld), weil dort alles aus
+#       demselben Grundwert (AiPlayerbot.ReactDelay) abgeleitet wird.
+#       Werte unter 0.1 und ueber 10.0 werden gekappt.
+#
+#       Die Verteilung der Stufen legt mod-bot-social fest:
+#       1 = 10 %, 2 = 20 %, 3 = 40 %, 4 = 22 %, 5 = 8 %.
+#       Default: 1.60 / 1.25 / 1.00 / 0.80 / 0.65
+#
+BotSocial.ReactDelay.Tier1 = 1.60
+BotSocial.ReactDelay.Tier2 = 1.25
+BotSocial.ReactDelay.Tier3 = 1.00
+BotSocial.ReactDelay.Tier4 = 0.80
+BotSocial.ReactDelay.Tier5 = 0.65
+
+#
+#   BotSocial.ReactDelay.RefreshSeconds
+#       Wie oft mod-playerbots die Stufen neu aus der Datenbank liest.
+#       Neue Bots bekommen ihr Profil erst beim naechsten Lesen, bis dahin
+#       gelten sie als durchschnittlich. Eine Abfrage ueber alle Profile,
+#       nicht pro Bot - 300 Sekunden sind guenstig. Minimum 30.
+#       Default: 300
+#
+BotSocial.ReactDelay.RefreshSeconds = 300

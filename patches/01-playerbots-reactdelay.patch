@@ -1,0 +1,145 @@
+--- a/src/Bot/PlayerbotAI.cpp	2026-08-28 18:59:39.611171156 +0000
++++ b/src/Bot/PlayerbotAI.cpp	2026-08-28 18:59:39.611619728 +0000
+@@ -11,8 +11,10 @@
+ #include "ChatHelper.h"
+ #include "CheckMountStateAction.h"
+ #include "Common.h"
++#include "Config.h"
+ #include "CreatureData.h"
+ #include "DBCStores.h"
++#include "DatabaseEnv.h"
+ #include "EmoteAction.h"
+ #include "Engine.h"
+ #include "EventProcessor.h"
+@@ -53,9 +55,11 @@
+ #include "UpdateTime.h"
+ #include "Vehicle.h"
+ #include <cmath>
++#include <ctime>
+ #include <mutex>
+ #include <sstream>
+ #include <string>
++#include <unordered_map>
+ 
+ namespace
+ {
+@@ -6608,10 +6612,119 @@
+     return result;
+ }
+ 
++// ---------------------------------------------------------------------------
++// mod-bot-social: Koennen pro Bot statt einheitlich
++//
++// mod-bot-social wuerfelt fuer jeden Bot eine Stufe (skill_tier 1..5) und legt
++// sie in acore_characters.bot_social_profile ab. Hier wird daraus die
++// Reaktionszeit: ein guter Spieler reagiert schneller als ein schlechter.
++//
++// Bewusst ueber die Tabelle statt ueber einen Link gegen mod-bot-social - so
++// bleibt mod-playerbots ohne dieses Modul lauffaehig, und Aenderungen dort
++// brechen hier nichts. Ohne Modul (leere oder fehlende Tabelle) oder mit
++// BotSocial.ReactDelay.Enable = 0 ist der Faktor ueberall 1.0, das Verhalten
++// also unveraendert.
++// ---------------------------------------------------------------------------
++namespace
++{
++    std::mutex                        _socialTierMutex;
++    std::unordered_map<uint32, uint8> _socialTiers;
++    time_t                            _socialTierLoaded  = 0;
++    bool                              _socialTierEnabled = false;
++    uint32                            _socialTierRefresh = 300;
++    // Index 0 bleibt ungenutzt, damit skill_tier direkt indizieren kann.
++    float                             _socialTierMul[6]  = { 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f };
++
++    // Erwartet, dass der Aufrufer _socialTierMutex haelt.
++    void ReloadSocialTiers()
++    {
++        _socialTierEnabled = sConfigMgr->GetOption<bool>("BotSocial.ReactDelay.Enable", false);
++
++        _socialTierRefresh = sConfigMgr->GetOption<uint32>("BotSocial.ReactDelay.RefreshSeconds", 300);
++        if (_socialTierRefresh < 30)
++            _socialTierRefresh = 30;
++
++        _socialTierMul[1] = sConfigMgr->GetOption<float>("BotSocial.ReactDelay.Tier1", 1.60f);
++        _socialTierMul[2] = sConfigMgr->GetOption<float>("BotSocial.ReactDelay.Tier2", 1.25f);
++        _socialTierMul[3] = sConfigMgr->GetOption<float>("BotSocial.ReactDelay.Tier3", 1.00f);
++        _socialTierMul[4] = sConfigMgr->GetOption<float>("BotSocial.ReactDelay.Tier4", 0.80f);
++        _socialTierMul[5] = sConfigMgr->GetOption<float>("BotSocial.ReactDelay.Tier5", 0.65f);
++
++        for (uint32 i = 1; i <= 5; ++i)
++        {
++            if (_socialTierMul[i] < 0.1f)
++                _socialTierMul[i] = 0.1f;
++            if (_socialTierMul[i] > 10.0f)
++                _socialTierMul[i] = 10.0f;
++        }
++
++        _socialTiers.clear();
++
++        if (!_socialTierEnabled)
++            return;
++
++        QueryResult result = CharacterDatabase.Query(
++            "SELECT bot_guid, skill_tier FROM bot_social_profile");
++
++        if (!result)
++            return;
++
++        do
++        {
++            Field* fields = result->Fetch();
++            uint32 guid = fields[0].Get<uint32>();
++            uint32 tier = fields[1].Get<uint8>();
++
++            if (tier < 1)
++                tier = 1;
++            if (tier > 5)
++                tier = 5;
++
++            _socialTiers[guid] = static_cast<uint8>(tier);
++        } while (result->NextRow());
++    }
++
++    float SocialReactMultiplier(Player* bot)
++    {
++        if (!bot)
++            return 1.0f;
++
++        std::lock_guard<std::mutex> guard(_socialTierMutex);
++
++        time_t now = time(nullptr);
++        if (!_socialTierLoaded ||
++            static_cast<uint32>(now - _socialTierLoaded) >= _socialTierRefresh)
++        {
++            ReloadSocialTiers();
++            _socialTierLoaded = now;
++        }
++
++        if (!_socialTierEnabled)
++            return 1.0f;
++
++        std::unordered_map<uint32, uint8>::const_iterator it =
++            _socialTiers.find(bot->GetGUID().GetCounter());
++
++        // Noch kein Profil geschrieben (mod-bot-social schreibt verzoegert):
++        // bis dahin Durchschnitt.
++        if (it == _socialTiers.end())
++            return 1.0f;
++
++        return _socialTierMul[it->second];
++    }
++}
++
+ uint32 PlayerbotAI::GetReactDelay()
+ {
+     uint32 base = sPlayerbotAIConfig.reactDelay;  // Default 100(ms)
+ 
++    // mod-bot-social: schlechte Spieler reagieren traeger, gute schneller.
++    // Alle Rueckgabewerte dieser Funktion leiten sich aus base ab, ein
++    // Skalieren hier wirkt daher auf jeden Pfad.
++    base = static_cast<uint32>(float(base) * SocialReactMultiplier(bot));
++    if (!base)
++        base = 1;
++
+     // If dynamic react delay is disabled, use a static calculation
+     if (!sPlayerbotAIConfig.dynamicReactDelay)
+     {

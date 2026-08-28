@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+
+## CUSTOM SQL - used by db_assembler.sh
+
+DB_CHARACTERS_CUSTOM_PATHS+=(
+	"$MOD_BOT_SOCIAL_ROOT/data/sql/db-characters/base/"
+)
+
+DB_CHARACTERS_UPDATES_PATHS+=(
+	"$MOD_BOT_SOCIAL_ROOT/data/sql/db-characters/updates/"
+)
