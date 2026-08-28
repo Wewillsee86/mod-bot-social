@@ -1,0 +1,97 @@
+{
+  "id": "mod-bot-social",
+  "name": "Bot Social Graph",
+  "description": "Persistent social relationships for playerbots - bots remember who they played with and act on it: friends, grudges, recruitment, promotions, and guild schisms.",
+  "author": {
+    "name": "Wewillsee86",
+    "url": "https://github.com/Wewillsee86"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Wewillsee86/mod-bot-social"
+  },
+  "version": "1.0.0",
+  "azerothcore": {
+    "min": "master",
+    "build": 3335
+  },
+  "categories": ["modules", "playerbots", "ai", "social"],
+  "tags": ["playerbots", "social", "bots", "ai", "relationships", "guilds"],
+  "license": "AGPL-3.0",
+  "icon": "Mod-Bot-Social-512.png",
+  "screenshots": [],
+  "dependencies": {
+    "required": ["mod-playerbots"],
+    "optional": []
+  },
+  "installation": {
+    "type": "module",
+    "steps": [
+      "Clone into modules/ directory",
+      "Rebuild with CMake",
+      "Start worldserver (creates tables)",
+      "Enable in mod_bot_social.conf",
+      "Reload config with .reload config"
+    ]
+  },
+  "features": [
+    "One-sided affection model (A likes B ≠ B likes A)",
+    "Dunbar limit prevents infinite bond growth",
+    "Grudges fade slower than friendships",
+    "First impression bonus",
+    "Archetype friction (questor vs pvper etc)",
+    "Optional ReactDelay patch: skill affects bot reaction time",
+    "Guild recruitment based on bonds",
+    "Automatic promotions",
+    "Guild schisms when cliques split",
+    "Server-wide reputation system",
+    "In-game inspection commands (.social stats/bonds/grudges/who)",
+    "Fully configurable without restart (OnAfterConfigLoad hook)",
+    "No dependency link to mod-playerbots"
+  ],
+  "configuration": {
+    "file": "conf/mod_bot_social.conf.dist",
+    "reload": "runtime"
+  },
+  "database": {
+    "tables": [
+      "bot_social_bond",
+      "bot_social_profile", 
+      "bot_social_guild",
+      "bot_social_event"
+    ],
+    "schema": "data/sql/db-characters/base/bot_social_tables.sql",
+    "updates": "data/sql/db-characters/updates/"
+  },
+  "commands": [
+    {
+      "name": ".social stats",
+      "description": "Overview: bonds, friendships, grudges, guilds"
+    },
+    {
+      "name": ".social bonds <name>",
+      "description": "Show character's strongest bonds"
+    },
+    {
+      "name": ".social grudges <name>",
+      "description": "Show character's worst grudges"
+    },
+    {
+      "name": ".social who <name>",
+      "description": "Show profile: archetype, skill, sociability, reputation"
+    }
+  ],
+  "patches": [
+    {
+      "target": "mod-playerbots",
+      "file": "patches/01-playerbots-reactdelay.patch",
+      "description": "Optional: Makes bot skill tier affect reaction time",
+      "required": false
+    }
+  ],
+  "links": {
+    "homepage": "https://github.com/Wewillsee86/mod-bot-social",
+    "issues": "https://github.com/Wewillsee86/mod-bot-social/issues",
+    "documentation": "https://github.com/Wewillsee86/mod-bot-social#readme"
+  }
+}
