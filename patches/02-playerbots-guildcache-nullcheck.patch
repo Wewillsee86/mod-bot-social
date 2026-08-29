@@ -1,0 +1,21 @@
+diff --git a/src/Mgr/Guild/PlayerbotGuildMgr.cpp b/src/Mgr/Guild/PlayerbotGuildMgr.cpp
+index 144f27ae..24b9f0c9 100644
+--- a/src/Mgr/Guild/PlayerbotGuildMgr.cpp
++++ b/src/Mgr/Guild/PlayerbotGuildMgr.cpp
+@@ -223,6 +223,16 @@ void PlayerbotGuildMgr::ValidateGuildCache()
+         cache.memberCount = guild->GetMemberCount();
+         ObjectGuid leaderGuid = guild->GetLeaderGUID();
+         CharacterCacheEntry const* leaderEntry = sCharacterCache->GetCharacterCacheByGuid(leaderGuid);
++        // A guild can outlive its leader's character row (deleted character, failed cleanup). The
++        // cache lookup then yields nullptr; dereferencing it crashed the hourly validation run.
++        // Skipping the entry keeps the previously cached state instead of taking the world down.
++        if (!leaderEntry)
++        {
++            LOG_ERROR("playerbots", "Guild id={} name='{}' has no character cache entry for its leader {} - skipping",
++                guildId, cache.name, leaderGuid.ToString());
++            continue;
++        }
++
+         uint32 leaderAccount = leaderEntry->AccountId;
+         cache.hasRealPlayer = !(sPlayerbotAIConfig.IsInRandomAccountList(leaderAccount));
+         cache.faction = Player::TeamIdForRace(leaderEntry->Race);
