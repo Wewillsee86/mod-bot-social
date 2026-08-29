@@ -73,6 +73,12 @@ module hooks `OnAfterConfigLoad` and re-reads **every** key.
 In `acore_characters`: `bot_social_bond`, `bot_social_profile`,
 `bot_social_guild`, `bot_social_event`.
 
+`bot_social_event` carries `map_id`/`zone_id` (0 = unknown) so an external
+dashboard can ask *where* grudges and awards happen, and — with
+`Trace.Enable` — a `level_up` row per level gained (weight = new level,
+detail = old level). GM characters with `.gm on` are excluded from all
+scoring and logging via `IgnoreGameMasters` (default on).
+
 The SQL ships twice on purpose — under `base/` for a fresh database, under
 `updates/` for one that is already populated. Changing a table means
 touching both files.
@@ -164,6 +170,32 @@ mod-playerbots learns **nothing** about this module in the process: it just
 reads the `bot_social_profile` table, once for all bots, refreshed every
 `ReactDelay.RefreshSeconds`. With the module absent or the switch off, the
 factor is 1.0 everywhere and behaviour is exactly as without the patch.
+
+## Optional: fix a crash in mod-playerbots' guild validation
+
+Independent of the recruiting feature above: mod-playerbots' hourly guild
+cache validation (`PlayerbotGuildMgr::ValidateGuildCache`) dereferences the
+guild leader's character-cache entry without checking it for null. If a
+guild's leader character was deleted while the guild itself survived, that
+lookup returns null and the next validation pass crashes the worldserver.
+
+`patches/02-playerbots-guildcache-nullcheck.patch` adds the missing check:
+a guild with no cached leader is skipped and logged instead of dereferenced.
+
+Same two ways in as above:
+
+```bash
+cd azerothcore-wotlk/modules/mod-playerbots
+git apply ../mod-bot-social/patches/02-playerbots-guildcache-nullcheck.patch
+```
+
+or copy `patches/mod-playerbots/src/Mgr/Guild/PlayerbotGuildMgr.cpp` to
+`modules/mod-playerbots/src/Mgr/Guild/PlayerbotGuildMgr.cpp`, same commit
+check as above (`2f7d9f77`) applies.
+
+This one needs no config flag and no module coupling — it only guards a
+null pointer that mod-playerbots itself already checks for the guild object
+two lines above.
 
 ## Troubleshooting
 
@@ -306,6 +338,12 @@ das Modul hängt an `OnAfterConfigLoad` und liest **alle** Schlüssel neu.
 In `acore_characters`: `bot_social_bond`, `bot_social_profile`,
 `bot_social_guild`, `bot_social_event`.
 
+`bot_social_event` trägt `map_id`/`zone_id` (0 = unbekannt), damit ein
+externes Dashboard fragen kann, *wo* Grolle und Vergaben entstehen, und —
+mit `Trace.Enable` — eine `level_up`-Zeile pro Aufstieg (weight = neues
+Level, detail = altes). GM-Charaktere mit `.gm on` sind über
+`IgnoreGameMasters` (Standard an) von Punkten und Protokoll ausgenommen.
+
 Das SQL liegt bewusst zweimal vor — unter `base/` für eine frische
 Datenbank, unter `updates/` für eine bereits befüllte. Wer eine Tabelle
 ändert, muss beide Dateien anfassen.
@@ -401,6 +439,34 @@ Tabelle `bot_social_profile`, einmal für alle Bots, alle
 `ReactDelay.RefreshSeconds` neu. Fehlt das Modul oder ist der Schalter aus,
 ist der Faktor überall 1.0 und alles verhält sich wie ohne Patch.
 
+## Optional: einen Absturz in der Gilden-Validierung von mod-playerbots beheben
+
+Unabhängig von der Rekrutierungs-Funktion oben: mod-playerbots' stündliche
+Gilden-Cache-Prüfung (`PlayerbotGuildMgr::ValidateGuildCache`) dereferenziert
+den Character-Cache-Eintrag des Gildenmeisters ohne Nullprüfung. Wurde der
+Charakter des Gildenmeisters gelöscht, während die Gilde selbst bestehen
+blieb, liefert dieser Lookup null zurück und der nächste Prüflauf stürzt den
+Worldserver ab.
+
+`patches/02-playerbots-guildcache-nullcheck.patch` fügt die fehlende Prüfung
+hinzu: eine Gilde ohne gecachten Gildenmeister wird übersprungen und
+protokolliert, statt dereferenziert.
+
+Dieselben zwei Wege wie oben:
+
+```bash
+cd azerothcore-wotlk/modules/mod-playerbots
+git apply ../mod-bot-social/patches/02-playerbots-guildcache-nullcheck.patch
+```
+
+oder `patches/mod-playerbots/src/Mgr/Guild/PlayerbotGuildMgr.cpp` nach
+`modules/mod-playerbots/src/Mgr/Guild/PlayerbotGuildMgr.cpp` kopieren,
+gleicher Commit-Check wie oben (`2f7d9f77`).
+
+Dieser Patch braucht keinen Konfig-Schalter und keine Modul-Kopplung — er
+sichert nur einen Nullzeiger ab, den mod-playerbots für das Gildenobjekt
+zwei Zeilen darüber bereits selbst prüft.
+
 ## Fehlerbehebung
 
 ### Modul lädt nicht / Tabellen fehlen
@@ -460,6 +526,75 @@ ist der Faktor überall 1.0 und alles verhält sich wie ohne Patch.
   das steht in keiner Config.
 - Die Ereignisse landen stumm in `bot_social_event` — im Spiel sagt
   niemand etwas dazu.
+
+
+## Installation der Playerbots-Patches / Installing Playerbots Patches
+
+**Deutsch:**
+
+Dieses Modul liefert zwei Patches für `mod-playerbots`, die Kompatibilitätsprobleme beheben:
+
+1. **01-playerbots-reactdelay.patch** — Macht `sRandomBotUpdateInterval` pro Bot konfigurierbar statt global (verhindert Konflikte mit Bot-Social-Rekrutierung).
+2. **02-playerbots-guildcache-nullcheck.patch** — Fügt Null-Check für Gilden-Cache hinzu (verhindert Crash wenn Gilden-Leader gelöscht wird).
+
+### Automatische Installation (empfohlen)
+
+Führe eines der folgenden Skripte im Modul-Root aus:
+
+- **Windows PowerShell:** `apply-playerbots-patches.ps1`
+- **Windows CMD:** `apply-playerbots-patches.bat`
+
+Die Skripte prüfen, ob `mod-playerbots` installiert ist, wenden die Patches via `git apply` an und sind idempotent (wiederholte Ausführung ist sicher). Bei Konflikten wird auf vorgepatchte Dateien zurückgegriffen.
+
+### Manuelle Installation
+
+Falls die Skripte nicht funktionieren:
+
+1. Wechsle in dein `modules/mod-playerbots`-Verzeichnis
+2. Führe für jeden Patch aus:
+   ```bash
+   git apply --whitespace=nowarn ../mod-bot-social/patches/01-playerbots-reactdelay.patch
+   git apply --whitespace=nowarn ../mod-bot-social/patches/02-playerbots-guildcache-nullcheck.patch
+   ```
+3. Falls `git apply` fehlschlägt (z.B. wegen Upstream-Änderungen), kopiere die vorgepatchten Dateien aus `patches/playerbots/`:
+   ```bash
+   cp ../mod-bot-social/patches/playerbots/src/Bot/PlayerbotAI.cpp src/Bot/PlayerbotAI.cpp
+   cp ../mod-bot-social/patches/playerbots/src/Mgr/Guild/PlayerbotGuildMgr.cpp src/Mgr/Guild/PlayerbotGuildMgr.cpp
+   ```
+
+---
+
+**English:**
+
+This module ships two patches for `mod-playerbots` that fix compatibility issues:
+
+1. **01-playerbots-reactdelay.patch** — Makes `sRandomBotUpdateInterval` configurable per bot instead of global (prevents conflicts with Bot-Social recruitment).
+2. **02-playerbots-guildcache-nullcheck.patch** — Adds null-check for guild cache (prevents crash when guild leader is deleted).
+
+### Automatic Installation (recommended)
+
+Run one of the following scripts in the module root:
+
+- **Windows PowerShell:** `apply-playerbots-patches.ps1`
+- **Windows CMD:** `apply-playerbots-patches.bat`
+
+The scripts check if `mod-playerbots` is installed, apply the patches via `git apply`, and are idempotent (safe to run multiple times). On conflicts, they fall back to pre-patched files.
+
+### Manual Installation
+
+If the scripts don't work:
+
+1. Change to your `modules/mod-playerbots` directory
+2. Run for each patch:
+   ```bash
+   git apply --whitespace=nowarn ../mod-bot-social/patches/01-playerbots-reactdelay.patch
+   git apply --whitespace=nowarn ../mod-bot-social/patches/02-playerbots-guildcache-nullcheck.patch
+   ```
+3. If `git apply` fails (e.g. due to upstream changes), copy the pre-patched files from `patches/playerbots/`:
+   ```bash
+   cp ../mod-bot-social/patches/playerbots/src/Bot/PlayerbotAI.cpp src/Bot/PlayerbotAI.cpp
+   cp ../mod-bot-social/patches/playerbots/src/Mgr/Guild/PlayerbotGuildMgr.cpp src/Mgr/Guild/PlayerbotGuildMgr.cpp
+   ```
 
 ## Lizenz
 
