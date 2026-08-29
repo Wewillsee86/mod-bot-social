@@ -96,8 +96,28 @@ CREATE TABLE IF NOT EXISTS `bot_social_event` (
     `kind`        VARCHAR(24) NOT NULL,
     `detail`      VARCHAR(128) NOT NULL DEFAULT '',
     `weight`      INT NOT NULL DEFAULT 0,
+    -- Ort des Ereignisses; 0 = unbekannt (kein Player greifbar)
+    `map_id`      INT UNSIGNED NOT NULL DEFAULT 0,
+    `zone_id`     INT UNSIGNED NOT NULL DEFAULT 0,
     `created_at`  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (`id`),
     KEY `idx_actor` (`actor_guid`, `created_at`),
     KEY `idx_kind` (`kind`, `created_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ---------------------------------------------------------------
+-- Time series for the dashboard.
+--
+-- Narrow (metric, value) rows so a new metric never needs a
+-- migration. Written by the dashboard generator, read nowhere in
+-- the module itself - it lives here so a dump of acore_characters
+-- carries the history along.
+-- ---------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `bot_social_snapshot` (
+    `id`       INT UNSIGNED NOT NULL AUTO_INCREMENT,
+    `taken_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `metric`   VARCHAR(48) NOT NULL,
+    `value`    BIGINT NOT NULL,
+    PRIMARY KEY (`id`),
+    KEY `idx_metric_time` (`metric`, `taken_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
