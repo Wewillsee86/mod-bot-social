@@ -559,3 +559,81 @@ BotSocial.Trace.MinWeight = 0
 #       Default: 14
 #
 BotSocial.Trace.RetentionDays = 14
+
+###############################################################################
+# GERUECHTE
+###############################################################################
+
+#
+#   BotSocial.Gossip.Enable
+#       Bisher war der Ruf koerperlos: jemand benimmt sich daneben, und
+#       der Server weiss es sofort. Niemand hat es jemandem erzaehlt.
+#
+#       Mit diesem Schalter erzaehlt stattdessen das Opfer seinen
+#       Freunden davon. Wie viel haengenbleibt, entscheidet deren
+#       Vertrauen zum Erzaehler — nicht, ob die Geschichte stimmt. Ein
+#       beliebter Uebeltaeter uebersteht das, ein unbeliebtes Opfer wird
+#       nicht ernst genommen.
+#       Default: 0
+#
+BotSocial.Gossip.Enable = 0
+
+#
+#   MinSeverity
+#       Nur Vorfaelle ab dieser Schwere werden weitererzaehlt. Ein
+#       verlorenes Duell (2) ist kein Gespraechsthema, ein Ninja-Loot
+#       (35) oder ein Gildenrauswurf (60) schon.
+#       Default: 25
+#
+BotSocial.Gossip.MinSeverity = 25
+
+#
+#   MinTrust / FullTrust
+#       Ab MinTrust hoert jemand ueberhaupt zu; ab FullTrust glaubt er
+#       die Geschichte ungefiltert. Dazwischen wird anteilig geglaubt.
+#       Default: 40 / 120
+#
+BotSocial.Gossip.MinTrust = 40
+BotSocial.Gossip.FullTrust = 120
+
+#
+#   Percent
+#       Anteil des Vorfalls, der beim voll vertrauenden Zuhoerer
+#       ankommt. 25 heisst: ein Ninja-Loot von 35 kostet den Taeter beim
+#       Freund des Opfers rund 9 Punkte.
+#       Default: 25
+#
+BotSocial.Gossip.Percent = 25
+
+#
+#   MaxListeners / MaxStrangers
+#       Wie viele Freunde pro Vorfall erfahren es (die engsten zuerst),
+#       und wie viele davon den Beschuldigten noch gar nicht kennen
+#       duerfen. Der zweite Wert ist die eigentliche Bremse: neue
+#       Bindungen lassen die Tabelle wachsen, wovor die Dunbar-Grenze
+#       sonst schuetzt. Klein halten.
+#       Default: 5 / 2
+#
+BotSocial.Gossip.MaxListeners = 5
+BotSocial.Gossip.MaxStrangers = 2
+
+#
+#   DecayFactor
+#       Hoerensagen verblasst schneller als Erlebtes. 3 heisst: der
+#       gehoerte Anteil eines Grolls zerfaellt dreimal so schnell wie
+#       der selbst erlebte. Wer dabei war, vergisst es nicht so leicht.
+#       1 schaltet den Unterschied ab.
+#       Default: 3
+#
+BotSocial.Gossip.DecayFactor = 3
+
+#
+#   AboutPlayers
+#       Ob auch ueber echte Spieler getratscht wird. Standard aus: von
+#       hunderten Bots ausgefroren zu werden, weil man einmal jemandem
+#       den Wurf weggeschnappt hat, waere kein Realismus, sondern ein
+#       kaputtes Spiel. Umgekehrt gilt das nicht — wenn DIR etwas
+#       angetan wird, erzaehlst du es deinen Freunden wie jeder andere.
+#       Default: 0
+#
+BotSocial.Gossip.AboutPlayers = 0

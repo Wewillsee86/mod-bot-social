@@ -29,6 +29,12 @@ CREATE TABLE IF NOT EXISTS `bot_social_bond` (
 
     -- conflict
     `grudge_events`     INT UNSIGNED NOT NULL DEFAULT 0,
+
+    -- how much of the current grudge is only hearsay, not experience.
+    -- Always <= -affinity, and it fades faster than what the bot lived
+    -- through itself.
+    `hearsay`           INT NOT NULL DEFAULT 0,
+
     `last_grudge`       VARCHAR(24) NOT NULL DEFAULT '',
 
     -- reciprocity: positive means bot_guid owes other_guid a favour

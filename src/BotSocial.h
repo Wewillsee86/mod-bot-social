@@ -123,6 +123,22 @@ namespace BotSocial
         int32  reputationPerGrudge = 3;
         int32  reputationPerFavour = 1;
 
+        // ---- Geruechte: Groll verbreitet sich ueber Freunde ----
+        //
+        // Bisher war der Ruf koerperlos: der Server wusste sofort, wer
+        // sich danebenbenommen hat. Hier erzaehlt stattdessen das Opfer
+        // seinen Freunden davon, und wie viel haengenbleibt, entscheidet
+        // deren Vertrauen zum Erzaehler - nicht die Wahrheit.
+        bool   gossipEnable       = false;
+        int32  gossipMinSeverity  = 25;  // kleinere Vorfaelle spricht niemand an
+        int32  gossipMinTrust     = 40;  // ab dieser Bindung hoert jemand zu
+        int32  gossipFullTrust    = 120; // ab hier glaubt er es ungefiltert
+        int32  gossipPercent      = 25;  // Anteil des Vorfalls beim Zuhoerer
+        uint32 gossipMaxListeners = 5;   // pro Vorfall
+        uint32 gossipMaxStrangers = 2;   // neue Bindungen pro Vorfall
+        uint32 gossipDecayFactor  = 3;   // Hoerensagen verblasst schneller
+        bool   gossipAboutPlayers = false; // ueber dich wird nicht getratscht
+
         // ---- trace: every award becomes a bot_social_event row ----
         bool   traceEnable        = false;
         int32  traceMinWeight     = 0;   // |wirksame Vergabe| darunter: still

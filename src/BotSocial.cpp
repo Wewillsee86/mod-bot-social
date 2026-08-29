@@ -59,6 +59,9 @@ namespace
         bool   befriended = false;
         bool   ignored    = false;
         bool   dirty      = false;
+        // Wie viel des aktuellen Grolls nur gehoert und nicht erlebt
+        // ist. Immer <= -affinity. Verblasst schneller (siehe DecayTick).
+        int32  hearsay    = 0;
         std::string lastGrudge;
     };
 
@@ -141,6 +144,10 @@ namespace
         uint32 grudges    = 0;
         int32  favours    = 0;
         bool   countsAsMeeting = true;
+        // Geruechte duerfen den Ersteindruck-Multiplikator nicht
+        // ausloesen: ein Fremder, von dem man nur gehoert hat, wuerde
+        // sonst doppelt zaehlen.
+        bool   ignoreFirstImpression = false;
         std::string grudgeKind;
 
         // Trace: non-empty means Apply() logs the EFFECTIVE award (after
@@ -181,7 +188,8 @@ namespace
         // why bailing on someone the first time you group with them is
         // so much worse than doing it on the twentieth.
         int32 weight = t.affinity;
-        if (e.encounters < _cfg.firstImpressions)
+        if (!t.ignoreFirstImpression
+            && e.encounters < _cfg.firstImpressions)
             weight *= _cfg.firstImpressionMul;
 
         e.affinity += weight;
@@ -256,6 +264,132 @@ namespace
         return jt == it->second.end() ? 0 : jt->second.affinity;
     }
 
+    // ---- Geruechte ------------------------------------------------------
+
+    // Das Opfer erzaehlt seinen Freunden, was passiert ist. Wie viel
+    // haengenbleibt, entscheidet das Vertrauen des Zuhoerers zum
+    // Erzaehler - nicht, ob es stimmt. Ein beliebter Uebeltaeter
+    // uebersteht das, ein unbeliebtes Opfer wird nicht ernst genommen.
+    //
+    // severity ist der Betrag des erlebten Grolls (positiv).
+    void SpreadRumour(uint32 teller, uint32 offender, int32 severity,
+                      std::string const& kind, uint32 mapId, uint32 zoneId)
+    {
+        if (!_cfg.gossipEnable || !teller || !offender || teller == offender)
+            return;
+        if (severity < _cfg.gossipMinSeverity)
+            return;
+
+        // Ueber den Spieler wird nicht getratscht, solange er das nicht
+        // erlaubt: von hunderten Bots ausgefroren zu werden waere kein
+        // Realismus, sondern ein kaputtes Spiel.
+        if (IsHuman(offender) && !_cfg.gossipAboutPlayers)
+            return;
+
+        // Erst sammeln, dann anwenden. Apply() legt neue Knoten in
+        // _graph an; wuerde man dabei ueber _graph iterieren, koennte
+        // das Rehashing die Referenzen unter den Fuessen wegziehen.
+        std::vector<std::pair<uint32, int32>> listeners;
+        {
+            std::lock_guard<std::recursive_mutex> guard(_graphMutex);
+
+            auto it = _graph.find(teller);
+            if (it == _graph.end())
+                return;
+
+            for (auto const& edge : it->second)
+            {
+                uint32 listener = edge.first;
+                if (listener == offender || listener == teller)
+                    continue;
+                if (edge.second.affinity < _cfg.gossipMinTrust)
+                    continue;
+
+                listeners.push_back(
+                    std::make_pair(listener, edge.second.affinity));
+            }
+        }
+
+        if (listeners.empty())
+            return;
+
+        // Die engsten Freunde erfahren es zuerst.
+        std::sort(listeners.begin(), listeners.end(),
+                  [](std::pair<uint32, int32> const& a,
+                     std::pair<uint32, int32> const& b)
+                  { return a.second > b.second; });
+
+        uint32 told     = 0;
+        uint32 strangers = 0;
+
+        for (auto const& l : listeners)
+        {
+            if (told >= _cfg.gossipMaxListeners)
+                break;
+
+            uint32 listener = l.first;
+            int32  trust    = l.second;
+
+            // Loyalitaet schlaegt Hoerensagen: wer den Beschuldigten
+            // lieber mag als den Erzaehler, glaubt die Geschichte nicht.
+            if (AffinityOf(listener, offender) > trust)
+                continue;
+
+            bool isStranger;
+            {
+                std::lock_guard<std::recursive_mutex> guard(_graphMutex);
+                auto it = _graph.find(listener);
+                isStranger = it == _graph.end()
+                          || it->second.find(offender) == it->second.end();
+            }
+
+            // Neue Bindungen sind der teure Teil: sie lassen die Tabelle
+            // wachsen, wovor die Dunbar-Grenze eigentlich schuetzt.
+            if (isStranger)
+            {
+                if (strangers >= _cfg.gossipMaxStrangers)
+                    continue;
+                ++strangers;
+            }
+
+            int32 share = severity * _cfg.gossipPercent / 100;
+            if (_cfg.gossipFullTrust > 0 && trust < _cfg.gossipFullTrust)
+                share = share * trust / _cfg.gossipFullTrust;
+
+            if (share <= 0)
+                continue;
+
+            Touch t;
+            t.affinity   = -share;
+            t.grudgeKind = "hearsay";
+            t.countsAsMeeting       = false;
+            t.ignoreFirstImpression = true;
+            // kind bleibt leer: Apply() soll nicht selbst protokollieren,
+            // wir schreiben die Zeile unten mit dem Erzaehler im Detail.
+
+            Apply(listener, offender, t);
+
+            {
+                std::lock_guard<std::recursive_mutex> guard(_graphMutex);
+                Edge& e = _graph[listener][offender];
+                e.hearsay += share;
+                if (e.hearsay > -e.affinity)
+                    e.hearsay = std::max(0, -e.affinity);
+            }
+
+            if (_cfg.traceEnable && share >= _cfg.traceMinWeight)
+                LogEvent(listener, offender, "gossip",
+                         std::to_string(teller), -share, mapId, zoneId);
+
+            ++told;
+        }
+
+        if (told && _cfg.debug)
+            LOG_INFO("module",
+                     "BotSocial: {} erzaehlte {} Leuten von {} ({})",
+                     teller, told, offender, kind);
+    }
+
     // ---- conflict helper ----------------------------------------------
 
     // One bot wrongs the whole rest of a group. Everyone present loses
@@ -281,6 +415,8 @@ namespace
                 continue;
 
             Apply(other, culprit, t);
+            // ... und erzaehlt es hinterher seinen Freunden.
+            SpreadRumour(other, culprit, amount, kind, mapId, zoneId);
             ++victims;
         }
 
@@ -303,7 +439,7 @@ namespace
             "SELECT bot_guid, other_guid, affinity, encounters, "
             "times_grouped, minutes_together, dungeons_together, "
             "battles_together, grudge_events, favours_owed, "
-            "befriended, ignored, last_grudge "
+            "befriended, ignored, last_grudge, hearsay "
             "FROM bot_social_bond");
 
         uint32 loaded = 0;
@@ -328,6 +464,7 @@ namespace
                 e.befriended = f[10].Get<uint8>() != 0;
                 e.ignored    = f[11].Get<uint8>() != 0;
                 e.lastGrudge = f[12].Get<std::string>();
+                e.hearsay    = f[13].Get<int32>();
                 e.dirty      = false;
                 ++loaded;
             } while (res->NextRow());
@@ -381,7 +518,7 @@ namespace
                            "times_grouped, minutes_together, "
                            "dungeons_together, battles_together, "
                            "grudge_events, favours_owed, befriended, "
-                           "ignored, last_grudge) VALUES ("
+                           "ignored, last_grudge, hearsay) VALUES ("
                         << node.first << ", " << edge.first << ", "
                         << e.affinity << ", " << e.encounters << ", "
                         << e.grouped << ", " << e.minutes << ", "
@@ -389,8 +526,9 @@ namespace
                         << e.grudges << ", " << e.favours << ", "
                         << (e.befriended ? 1 : 0) << ", "
                         << (e.ignored ? 1 : 0) << ", '"
-                        << Escape(e.lastGrudge)
-                        << "') ON DUPLICATE KEY UPDATE "
+                        << Escape(e.lastGrudge) << "', "
+                        << e.hearsay
+                        << ") ON DUPLICATE KEY UPDATE "
                            "affinity = " << e.affinity
                         << ", encounters = " << e.encounters
                         << ", times_grouped = " << e.grouped
@@ -402,7 +540,8 @@ namespace
                         << ", befriended = " << (e.befriended ? 1 : 0)
                         << ", ignored = " << (e.ignored ? 1 : 0)
                         << ", last_grudge = '" << Escape(e.lastGrudge)
-                        << "', last_seen = NOW()";
+                        << "', hearsay = " << e.hearsay
+                        << ", last_seen = NOW()";
 
                     statements.push_back(sql.str());
                     e.dirty = false;
@@ -552,6 +691,7 @@ namespace
 
                 if (e.affinity > 0)
                 {
+                    e.hearsay = 0;
                     if (_cfg.decayPositive <= 0)
                         continue;
                     e.affinity = std::max(0,
@@ -578,6 +718,31 @@ namespace
 
                     e.affinity = std::min(0, e.affinity + step);
                     e.dirty = true;
+
+                    // Was man nur gehoert hat, verblasst schneller als
+                    // Erlebtes. Der zusaetzliche Schritt zehrt nur am
+                    // Hoerensagen-Anteil und nie darueber hinaus.
+                    if (e.hearsay > 0)
+                    {
+                        int32 extra = 0;
+                        if (_cfg.gossipDecayFactor > 1)
+                            extra = _cfg.decayNegative
+                                  * int32(_cfg.gossipDecayFactor - 1);
+
+                        if (extra > e.hearsay)
+                            extra = e.hearsay;
+
+                        if (extra > 0)
+                        {
+                            e.affinity = std::min(0, e.affinity + extra);
+                            e.hearsay -= extra;
+                        }
+
+                        // Der erlebte Schritt oben hat den Groll ebenfalls
+                        // verkleinert - die Invariante nachziehen.
+                        if (e.hearsay > -e.affinity)
+                            e.hearsay = std::max(0, -e.affinity);
+                    }
 
                     // Forgiveness lifts the ignore, but not the memory.
                     if (e.ignored && e.affinity > _cfg.ignoreThreshold)
@@ -1241,6 +1406,16 @@ void LoadConfig()
     _cfg.reputationPerGrudge = sConfigMgr->GetOption<int32>("BotSocial.Reputation.PerGrudge", 3);
     _cfg.reputationPerFavour = sConfigMgr->GetOption<int32>("BotSocial.Reputation.PerFavour", 1);
 
+    _cfg.gossipEnable       = sConfigMgr->GetOption<bool>("BotSocial.Gossip.Enable", false);
+    _cfg.gossipMinSeverity  = sConfigMgr->GetOption<int32>("BotSocial.Gossip.MinSeverity", 25);
+    _cfg.gossipMinTrust     = sConfigMgr->GetOption<int32>("BotSocial.Gossip.MinTrust", 40);
+    _cfg.gossipFullTrust    = sConfigMgr->GetOption<int32>("BotSocial.Gossip.FullTrust", 120);
+    _cfg.gossipPercent      = sConfigMgr->GetOption<int32>("BotSocial.Gossip.Percent", 25);
+    _cfg.gossipMaxListeners = sConfigMgr->GetOption<uint32>("BotSocial.Gossip.MaxListeners", 5);
+    _cfg.gossipMaxStrangers = sConfigMgr->GetOption<uint32>("BotSocial.Gossip.MaxStrangers", 2);
+    _cfg.gossipDecayFactor  = sConfigMgr->GetOption<uint32>("BotSocial.Gossip.DecayFactor", 3);
+    _cfg.gossipAboutPlayers = sConfigMgr->GetOption<bool>("BotSocial.Gossip.AboutPlayers", false);
+
     _cfg.traceEnable        = sConfigMgr->GetOption<bool>("BotSocial.Trace.Enable", false);
     _cfg.traceMinWeight     = sConfigMgr->GetOption<int32>("BotSocial.Trace.MinWeight", 0);
     _cfg.traceRetentionDays = sConfigMgr->GetOption<uint32>("BotSocial.Trace.RetentionDays", 14);
@@ -1588,6 +1763,8 @@ void OnGuildMemberRemoved(Guild* guild, Player* player, bool kicked)
     t.countsAsMeeting = false;
 
     Apply(low, master, t);
+    SpreadRumour(low, master, _cfg.lossGuildKick, "guild_kick",
+                 player->GetMapId(), player->GetZoneId());
     LogEvent(master, low, "guild_kick", guild->GetName(),
              -_cfg.lossGuildKick,
              player->GetMapId(), player->GetZoneId());
@@ -1641,6 +1818,11 @@ void OnPvpKill(Player* killer, Player* killed)
 
     Apply(killed->GetGUID().GetCounter(),
           killer->GetGUID().GetCounter(), t);
+
+    SpreadRumour(killed->GetGUID().GetCounter(),
+                 killer->GetGUID().GetCounter(),
+                 _cfg.lossGank, "gank",
+                 killed->GetMapId(), killed->GetZoneId());
 
     LogEvent(killer->GetGUID().GetCounter(),
              killed->GetGUID().GetCounter(),
