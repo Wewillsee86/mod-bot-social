@@ -32,6 +32,15 @@ BotSocial.Enable = 0
 #
 BotSocial.DebugLog = 0
 
+#
+#   BotSocial.IgnoreGameMasters
+#       Charaktere mit aktivem GM-Modus (.gm on) erzeugen weder Punkte
+#       noch Protokollzeilen. Damit verfälscht Testen die Werte nicht.
+#       Zum normalen Spielen .gm off - dann zählt alles wie gewohnt.
+#       Default: 1
+#
+BotSocial.IgnoreGameMasters = 1
+
 ###############################################################################
 # BINDUNGEN
 ###############################################################################
@@ -160,6 +169,23 @@ BotSocial.Recruit.GuildCooldown = 900
 #
 BotSocial.Recruit.TargetSizeMin = 12
 BotSocial.Recruit.TargetSizeMax = 45
+
+#
+#   BotSocial.Recruit.GuildCapacityCap
+#       Obergrenze, ab der eine Gilde als voll gilt. Werbung geht nie
+#       darueber hinaus: TargetSizeMax wird beim Start darauf begrenzt,
+#       und bereits gewuerfelte Ziele in bot_social_guild werden
+#       mitgesenkt.
+#       Hintergrund: mod-playerbots stuft eine Gilde ab
+#       AiPlayerbot.RandomBotGuildSizeMax als voll ein und weist ihr
+#       keine neuen Bots mehr zu. Darueber hinaus zu werben erzeugt nur
+#       Gilden, die das andere Modul nicht mehr bedient.
+#       0 = AiPlayerbot.RandomBotGuildSizeMax uebernehmen (empfohlen,
+#       damit beide Module dieselbe Grenze sehen). Eine positive Zahl
+#       setzt sich stattdessen durch. Ist beides 0, gilt keine Grenze.
+#       Default: 0
+#
+BotSocial.Recruit.GuildCapacityCap = 0
 
 #
 #   BotSocial.Recruit.MinAffinity
@@ -497,3 +523,39 @@ BotSocial.ReactDelay.Tier5 = 0.65
 #       Default: 300
 #
 BotSocial.ReactDelay.RefreshSeconds = 300
+
+###################################################################
+# NACHVOLLZIEHBARKEIT (TRACE)
+#
+# Schreibt jede wirksame Punktvergabe als Zeile nach bot_social_event.
+# Damit laesst sich die gespeicherte Zuneigung aus dem Protokoll
+# nachrechnen - die Grundlage fuer das Dashboard und die Fehlersuche.
+# Groll-Ereignisse protokollieren sich weiterhin selbst; hier kommen
+# die positiven Vergaben dazu (group_join, minutes, dungeon,
+# battleground, resurrected, resurrector).
+###################################################################
+
+#
+#   BotSocial.Trace.Enable
+#       Protokoll der Punktvergaben einschalten.
+#       Default: 0
+#
+BotSocial.Trace.Enable = 0
+
+#
+#   BotSocial.Trace.MinWeight
+#       Vergaben, deren Betrag (nach dem Erste-Eindruck-Multiplikator)
+#       darunter liegt, werden nicht protokolliert. 0 = alles.
+#       5 laesst die kleinen Dauervergaben (+2 Gruppe, +1 Minute) weg
+#       und behaelt Dungeons, Schlachtfelder und Wiederbelebungen.
+#       Default: 0
+#
+BotSocial.Trace.MinWeight = 0
+
+#
+#   BotSocial.Trace.RetentionDays
+#       Beim Serverstart werden Protokollzeilen geloescht, die aelter
+#       sind. 0 = nie loeschen.
+#       Default: 14
+#
+BotSocial.Trace.RetentionDays = 14

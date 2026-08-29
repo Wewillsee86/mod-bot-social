@@ -142,7 +142,29 @@ namespace
         int32  favours    = 0;
         bool   countsAsMeeting = true;
         std::string grudgeKind;
+
+        // Trace: non-empty means Apply() logs the EFFECTIVE award (after
+        // the first-impression multiplier) into bot_social_event. Grudge
+        // paths leave this empty - they already log themselves, a second
+        // row would double-count them.
+        std::string kind;
+
+        // Ort des Ereignisses, wenn ein Player greifbar war. 0 heisst
+        // ehrlich "unbekannt" (Minuten-Tick, Gruppenbeitritt).
+        uint32 mapId  = 0;
+        uint32 zoneId = 0;
     };
+
+    void LogEvent(uint32 actor, uint32 target, std::string const& kind,
+                  std::string const& detail, int32 weight,
+                  uint32 mapId = 0, uint32 zoneId = 0);
+
+    // Aktives GM-Flag (.gm on): Testen soll keine Punkte und keine
+    // Protokollzeilen erzeugen.
+    bool IgnoredActor(Player* player)
+    {
+        return _cfg.ignoreGameMasters && player && player->IsGameMaster();
+    }
 
     // Applies one side of an interaction. Callers pass a different
     // Touch per direction, because liking is not symmetric.
@@ -177,16 +199,26 @@ namespace
             e.lastGrudge = t.grudgeKind;
 
         e.dirty = true;
+
+        // Trace: write the effective award to bot_social_event, so the
+        // stored affinity can be recomputed from the log. Uses the same
+        // async Execute as every other write - no extra latency here.
+        if (_cfg.traceEnable && !t.kind.empty()
+            && std::abs(weight) >= _cfg.traceMinWeight)
+            LogEvent(from, to, t.kind, "", weight, t.mapId, t.zoneId);
     }
 
     void LogEvent(uint32 actor, uint32 target, std::string const& kind,
-                  std::string const& detail, int32 weight)
+                  std::string const& detail, int32 weight,
+                  uint32 mapId, uint32 zoneId)
     {
         CharacterDatabase.Execute(
             "INSERT INTO bot_social_event "
-            "(actor_guid, target_guid, kind, detail, weight) "
-            "VALUES ({}, {}, '{}', '{}', {})",
-            actor, target, Escape(kind), Escape(detail), weight);
+            "(actor_guid, target_guid, kind, detail, weight, "
+            "map_id, zone_id) "
+            "VALUES ({}, {}, '{}', '{}', {}, {}, {})",
+            actor, target, Escape(kind), Escape(detail), weight,
+            mapId, zoneId);
     }
 
     void BumpReputation(uint32 guid, int32 delta)
@@ -230,7 +262,8 @@ namespace
     // affection for the culprit; the culprit itself loses nothing,
     // because people rarely think worse of themselves.
     void GroupGrudge(Group* group, uint32 culprit, int32 amount,
-                     std::string const& kind, std::string const& detail)
+                     std::string const& kind, std::string const& detail,
+                     uint32 mapId = 0, uint32 zoneId = 0)
     {
         if (!_cfg.conflictEnable || !group || !amount)
             return;
@@ -255,7 +288,7 @@ namespace
             return;
 
         BumpReputation(culprit, -_cfg.reputationPerGrudge);
-        LogEvent(culprit, 0, kind, detail, -amount);
+        LogEvent(culprit, 0, kind, detail, -amount, mapId, zoneId);
 
         if (_cfg.debug)
             LOG_INFO("module", "BotSocial: {} upset {} group members ({})",
@@ -1155,6 +1188,37 @@ void LoadConfig()
     _cfg.recruitCooldown      = sConfigMgr->GetOption<uint32>("BotSocial.Recruit.GuildCooldown", 900);
     _cfg.guildTargetMin       = sConfigMgr->GetOption<uint32>("BotSocial.Recruit.TargetSizeMin", 12);
     _cfg.guildTargetMax       = sConfigMgr->GetOption<uint32>("BotSocial.Recruit.TargetSizeMax", 45);
+
+    // mod-playerbots flags a guild as full at AiPlayerbot.RandomBotGuildSizeMax and stops handing
+    // it new bots. Recruiting beyond that only produces guilds the other module has written off,
+    // so the roll range is clamped to that ceiling. Read straight from sConfigMgr: the value must
+    // work whether or not mod-playerbots is compiled in.
+    _cfg.guildCapacityCap = sConfigMgr->GetOption<uint32>("BotSocial.Recruit.GuildCapacityCap", 0);
+    if (!_cfg.guildCapacityCap)
+        _cfg.guildCapacityCap = sConfigMgr->GetOption<uint32>("AiPlayerbot.RandomBotGuildSizeMax", 0);
+
+    if (_cfg.guildCapacityCap)
+    {
+        if (_cfg.guildTargetMax > _cfg.guildCapacityCap)
+        {
+            LOG_INFO("module",
+                     "mod-bot-social: TargetSizeMax {} liegt ueber der Gildenkapazitaet {} - "
+                     "auf {} begrenzt.",
+                     _cfg.guildTargetMax, _cfg.guildCapacityCap, _cfg.guildCapacityCap);
+            _cfg.guildTargetMax = _cfg.guildCapacityCap;
+        }
+
+        // A Min above the ceiling would make every guild roll the same clamped value and silently
+        // drop the intended size spread, so pull it down too rather than inverting the range.
+        if (_cfg.guildTargetMin > _cfg.guildTargetMax)
+        {
+            LOG_INFO("module",
+                     "mod-bot-social: TargetSizeMin {} liegt ueber der begrenzten TargetSizeMax {} - "
+                     "auf {} gesenkt.",
+                     _cfg.guildTargetMin, _cfg.guildTargetMax, _cfg.guildTargetMax);
+            _cfg.guildTargetMin = _cfg.guildTargetMax;
+        }
+    }
     _cfg.recruitMinAffinity   = sConfigMgr->GetOption<int32>("BotSocial.Recruit.MinAffinity", 25);
     _cfg.recruitMinReputation = sConfigMgr->GetOption<int32>("BotSocial.Recruit.MinReputation", -50);
     _cfg.recruitStrangers     = sConfigMgr->GetOption<bool>("BotSocial.Recruit.AllowStrangers", true);
@@ -1177,7 +1241,14 @@ void LoadConfig()
     _cfg.reputationPerGrudge = sConfigMgr->GetOption<int32>("BotSocial.Reputation.PerGrudge", 3);
     _cfg.reputationPerFavour = sConfigMgr->GetOption<int32>("BotSocial.Reputation.PerFavour", 1);
 
+    _cfg.traceEnable        = sConfigMgr->GetOption<bool>("BotSocial.Trace.Enable", false);
+    _cfg.traceMinWeight     = sConfigMgr->GetOption<int32>("BotSocial.Trace.MinWeight", 0);
+    _cfg.traceRetentionDays = sConfigMgr->GetOption<uint32>("BotSocial.Trace.RetentionDays", 14);
+
     _cfg.flushInterval = sConfigMgr->GetOption<uint32>("BotSocial.FlushInterval", 60);
+
+    _cfg.ignoreGameMasters = sConfigMgr->GetOption<bool>(
+        "BotSocial.IgnoreGameMasters", true);
 
     _cfg.authDatabase = sConfigMgr->GetOption<std::string>(
         "BotSocial.AuthDatabaseName", "acore_auth");
@@ -1243,6 +1314,7 @@ void OnGroupMemberAdded(Group* group, ObjectGuid guid)
         Touch mine;
         mine.affinity = _cfg.gainGroupJoin;
         mine.grouped  = 1;
+        mine.kind     = "group_join";
 
         Touch theirs = mine;
         theirs.affinity = _cfg.gainGroupJoin + 1;
@@ -1297,6 +1369,7 @@ void OnGroupMemberRemoved(Group* group, ObjectGuid guid,
             t.affinity = minutes * _cfg.gainPerMinute;
             t.minutes  = uint32(minutes);
             t.countsAsMeeting = false;
+            t.kind     = "minutes";
 
             for (uint32 other : GroupMemberLowGuids(group))
                 if (other != leaver)
@@ -1375,7 +1448,7 @@ void OnGroupDisbanded(Group* group)
 
 void OnDungeonEntered(Player* player, uint32 /*mapId*/)
 {
-    if (!_cfg.enable || !player)
+    if (!_cfg.enable || !player || IgnoredActor(player))
         return;
 
     Group* group = player->GetGroup();
@@ -1386,6 +1459,9 @@ void OnDungeonEntered(Player* player, uint32 /*mapId*/)
     t.affinity = _cfg.gainDungeon;
     t.dungeons = 1;
     t.countsAsMeeting = false;
+    t.kind     = "dungeon";
+    t.mapId    = player->GetMapId();
+    t.zoneId   = player->GetZoneId();
 
     uint32 me = player->GetGUID().GetCounter();
     for (uint32 other : GroupMemberLowGuids(group))
@@ -1395,7 +1471,7 @@ void OnDungeonEntered(Player* player, uint32 /*mapId*/)
 
 void OnBattlegroundEntered(Player* player)
 {
-    if (!_cfg.enable || !player)
+    if (!_cfg.enable || !player || IgnoredActor(player))
         return;
 
     Group* group = player->GetGroup();
@@ -1406,6 +1482,9 @@ void OnBattlegroundEntered(Player* player)
     t.affinity = _cfg.gainBattleground;
     t.battles  = 1;
     t.countsAsMeeting = false;
+    t.kind     = "battleground";
+    t.mapId    = player->GetMapId();
+    t.zoneId   = player->GetZoneId();
 
     uint32 me = player->GetGUID().GetCounter();
     for (uint32 other : GroupMemberLowGuids(group))
@@ -1415,7 +1494,7 @@ void OnBattlegroundEntered(Player* player)
 
 void OnResurrected(Player* player)
 {
-    if (!_cfg.enable || !player)
+    if (!_cfg.enable || !player || IgnoredActor(player))
         return;
 
     Group* group = player->GetGroup();
@@ -1431,10 +1510,16 @@ void OnResurrected(Player* player)
     grateful.affinity = _cfg.gainResurrect;
     grateful.favours  = 1;
     grateful.countsAsMeeting = false;
+    grateful.kind     = "resurrected";
+    grateful.mapId    = player->GetMapId();
+    grateful.zoneId   = player->GetZoneId();
 
     Touch helper;
     helper.affinity = _cfg.gainResurrector;
     helper.countsAsMeeting = false;
+    helper.kind     = "resurrector";
+    helper.mapId    = grateful.mapId;
+    helper.zoneId   = grateful.zoneId;
 
     for (uint32 other : GroupMemberLowGuids(group))
     {
@@ -1446,11 +1531,28 @@ void OnResurrected(Player* player)
     }
 }
 
+// Reines Protokoll, keine Punkte: weight traegt das neue Level, damit
+// sich Level-Kurven direkt aus bot_social_event lesen lassen. Haengt
+// am Trace-Schalter, weil es dieselbe Tabelle fuellt und dieselbe
+// Aufraeumregel (RetentionDays) braucht.
+void OnLevelUp(Player* player, uint8 oldLevel)
+{
+    if (!_cfg.enable || !_cfg.traceEnable || !player
+        || IgnoredActor(player))
+        return;
+
+    LogEvent(player->GetGUID().GetCounter(), 0, "level_up",
+             std::to_string(uint32(oldLevel)),
+             int32(player->GetLevel()),
+             player->GetMapId(), player->GetZoneId());
+}
+
 // ---- conflict -----------------------------------------------------------
 
 void OnLootRoll(Player* player, Item* item, uint32 voteType)
 {
-    if (!_cfg.enable || !_cfg.conflictEnable || !player)
+    if (!_cfg.enable || !_cfg.conflictEnable || !player
+        || IgnoredActor(player))
         return;
 
     // NEED is 1. Only a need roll can be resented; greed and pass are
@@ -1465,7 +1567,8 @@ void OnLootRoll(Player* player, Item* item, uint32 voteType)
     std::string detail = item ? item->GetTemplate()->Name1 : "";
 
     GroupGrudge(group, player->GetGUID().GetCounter(),
-                _cfg.lossNinjaLoot, "ninja", detail);
+                _cfg.lossNinjaLoot, "ninja", detail,
+                player->GetMapId(), player->GetZoneId());
 }
 
 void OnGuildMemberRemoved(Guild* guild, Player* player, bool kicked)
@@ -1486,7 +1589,8 @@ void OnGuildMemberRemoved(Guild* guild, Player* player, bool kicked)
 
     Apply(low, master, t);
     LogEvent(master, low, "guild_kick", guild->GetName(),
-             -_cfg.lossGuildKick);
+             -_cfg.lossGuildKick,
+             player->GetMapId(), player->GetZoneId());
 
     if (_cfg.debug)
         LOG_INFO("module", "BotSocial: {} wurde aus '{}' geworfen",
@@ -1495,7 +1599,8 @@ void OnGuildMemberRemoved(Guild* guild, Player* player, bool kicked)
 
 void OnGuildMoneyWithdrawn(Guild* guild, Player* player, uint32 amount)
 {
-    if (!_cfg.enable || !_cfg.conflictEnable || !guild || !player)
+    if (!_cfg.enable || !_cfg.conflictEnable || !guild || !player
+        || IgnoredActor(player))
         return;
     if (amount < _cfg.bankDrainCopper)
         return;
@@ -1513,12 +1618,14 @@ void OnGuildMoneyWithdrawn(Guild* guild, Player* player, uint32 amount)
             Apply(m, low, t);
 
     BumpReputation(low, -_cfg.reputationPerGrudge);
-    LogEvent(low, 0, "bank_drain", guild->GetName(), int32(amount));
+    LogEvent(low, 0, "bank_drain", guild->GetName(), int32(amount),
+             player->GetMapId(), player->GetZoneId());
 }
 
 void OnPvpKill(Player* killer, Player* killed)
 {
-    if (!_cfg.enable || !_cfg.conflictEnable || !killer || !killed)
+    if (!_cfg.enable || !_cfg.conflictEnable || !killer || !killed
+        || IgnoredActor(killer))
         return;
 
     // Only a lopsided kill counts. A fair fight is not a grievance.
@@ -1537,12 +1644,14 @@ void OnPvpKill(Player* killer, Player* killed)
 
     LogEvent(killer->GetGUID().GetCounter(),
              killed->GetGUID().GetCounter(),
-             "gank", killed->GetName(), -_cfg.lossGank);
+             "gank", killed->GetName(), -_cfg.lossGank,
+             killed->GetMapId(), killed->GetZoneId());
 }
 
 void OnDuelFinished(Player* winner, Player* loser)
 {
-    if (!_cfg.enable || !_cfg.conflictEnable || !winner || !loser)
+    if (!_cfg.enable || !_cfg.conflictEnable || !winner || !loser
+        || IgnoredActor(winner))
         return;
 
     Touch t;
@@ -1607,6 +1716,14 @@ void Startup()
 
     LoadGraph();
 
+    // The trace log grows with every award; old rows carry no decision,
+    // they are pure observation. Prune them once per server start.
+    if (_cfg.traceRetentionDays > 0)
+        CharacterDatabase.Execute(
+            "DELETE FROM bot_social_event "
+            "WHERE created_at < NOW() - INTERVAL {} DAY",
+            _cfg.traceRetentionDays);
+
     CharacterDatabase.Execute(
         "INSERT IGNORE INTO bot_social_guild (guild_id, target_size) "
         "SELECT g.guildid, {} FROM guild g "
@@ -1630,6 +1747,14 @@ void Startup()
                 res->Fetch()[0].Get<uint32>());
         } while (res->NextRow());
     }
+
+    // Rows seeded before the cap existed (or before it was lowered) still carry oversized targets.
+    // RecruitTick reads target_size per row, not the config, so those guilds would keep recruiting
+    // past the ceiling until re-rolled. Bring them down in place.
+    if (_cfg.guildCapacityCap)
+        CharacterDatabase.Execute(
+            "UPDATE bot_social_guild SET target_size = {} WHERE target_size > {}",
+            _cfg.guildTargetMax, _cfg.guildTargetMax);
 
     LOG_INFO("module",
              "mod-bot-social aktiv: Streit={} Freunde={} Werbung={} "

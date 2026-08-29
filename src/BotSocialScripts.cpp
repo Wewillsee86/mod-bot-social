@@ -170,6 +170,7 @@ public:
         : PlayerScript("BotSocialPlayerScript",
                        {PLAYERHOOK_ON_LOGIN,
                         PLAYERHOOK_ON_MAP_CHANGED,
+                        PLAYERHOOK_ON_LEVEL_CHANGED,
                         PLAYERHOOK_ON_PVP_KILL,
                         PLAYERHOOK_ON_DUEL_END,
                         PLAYERHOOK_ON_PLAYER_RESURRECT,
@@ -197,6 +198,13 @@ public:
             BotSocial::OnDungeonEntered(player, map->GetId());
         else if (map->IsBattleground())
             BotSocial::OnBattlegroundEntered(player);
+    }
+
+    void OnPlayerLevelChanged(Player* player, uint8 oldLevel) override
+    {
+        // Nur aufwaerts - ein Level-Reset der Brackets ist kein Aufstieg.
+        if (player && player->GetLevel() > oldLevel)
+            BotSocial::OnLevelUp(player, oldLevel);
     }
 
     void OnPlayerPVPKill(Player* killer, Player* killed) override

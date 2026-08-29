@@ -94,6 +94,10 @@ namespace BotSocial
         uint32 recruitCooldown    = 900;
         uint32 guildTargetMin     = 12;
         uint32 guildTargetMax     = 45;
+        // Recruiting past the size mod-playerbots considers "full" is wasted work: it stops
+        // assigning bots to such a guild. 0 = read AiPlayerbot.RandomBotGuildSizeMax, which is
+        // the value that actually decides it. A positive number overrides that.
+        uint32 guildCapacityCap   = 0;
         int32  recruitMinAffinity = 25;
         int32  recruitMinReputation = -50;
         bool   recruitStrangers   = true;
@@ -119,8 +123,17 @@ namespace BotSocial
         int32  reputationPerGrudge = 3;
         int32  reputationPerFavour = 1;
 
+        // ---- trace: every award becomes a bot_social_event row ----
+        bool   traceEnable        = false;
+        int32  traceMinWeight     = 0;   // |wirksame Vergabe| darunter: still
+        uint32 traceRetentionDays = 14;  // ältere Zeilen beim Start löschen
+
         // ---- housekeeping ----
         uint32 flushInterval      = 60;
+
+        // GM-Aktionen (aktives .gm on) erzeugen keine Ereignisse und
+        // keine Punkte - Testen soll die Werte nicht verfaelschen.
+        bool   ignoreGameMasters  = true;
 
         // how to recognise a bot-led guild without linking playerbots
         std::string authDatabase     = "acore_auth";
@@ -146,6 +159,9 @@ namespace BotSocial
     void OnDungeonEntered(Player* player, uint32 mapId);
     void OnBattlegroundEntered(Player* player);
     void OnResurrected(Player* player);
+    // Nur Protokoll (kind='level_up'), keine Punkte - fuer die
+    // Level-Kurven des Dashboards.
+    void OnLevelUp(Player* player, uint8 oldLevel);
 
     // ---- conflict --------------------------------------------------------
 

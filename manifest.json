@@ -86,8 +86,20 @@
       "target": "mod-playerbots",
       "file": "patches/01-playerbots-reactdelay.patch",
       "description": "Optional: Makes bot skill tier affect reaction time",
-      "required": false
+      "required": false,
+      "applied_marker": "Koennen pro Bot statt einheitlich"
+    },
+    {
+      "target": "mod-playerbots",
+      "file": "patches/02-playerbots-guildcache-nullcheck.patch",
+      "description": "Optional: Guards a null deref in PlayerbotGuildMgr::ValidateGuildCache",
+      "required": false,
+      "applied_marker": "outlive its leader's character row"
     }
+  ],
+  "installers": [
+    "apply-playerbots-patches.ps1",
+    "apply-playerbots-patches.bat"
   ],
   "links": {
     "homepage": "https://github.com/Wewillsee86/mod-bot-social",
