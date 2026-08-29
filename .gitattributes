@@ -1,0 +1,22 @@
+# Zeilenenden festnageln. Ohne das entscheidet die Einstellung des
+# jeweiligen Rechners, und dann startet include.sh unter Linux nicht,
+# weil die Shell das CR am Zeilenende mitliest.
+
+* text=auto
+
+# Muss unter Linux laufen - immer LF, egal wer eincheckt.
+*.sh      text eol=lf
+*.sql     text eol=lf
+*.conf    text eol=lf
+*.dist    text eol=lf
+
+# Windows-Werkzeuge - immer CRLF.
+*.ps1     text eol=crlf
+*.bat     text eol=crlf
+
+# Quelltext bleibt Text, Bilder nicht anfassen.
+*.cpp     text
+*.h       text
+*.md      text
+*.json    text
+*.png     binary
