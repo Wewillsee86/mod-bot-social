@@ -924,6 +924,64 @@ namespace
                                      : it->second.archetype;
     }
 
+    // Kein EnsureProfile: wer noch kein Profil hat (oder ein Mensch
+    // ist), gilt als durchschnittlich gesellig statt eines zu bekommen.
+    int32 SociabilityOf(uint32 guid)
+    {
+        std::lock_guard<std::recursive_mutex> guard(_graphMutex);
+        auto it = _profiles.find(guid);
+        return it == _profiles.end() ? 50 : int32(it->second.sociability);
+    }
+
+    // Wuerde dieser Bot ablehnen, weil ihm heute nicht nach Gesellschaft
+    // ist? Das Ergebnis ist innerhalb eines Zeitfensters stabil - sonst
+    // wuerde ein Einzelgaenger bei genug Anfragen doch in jeder Gruppe
+    // landen, weil jeder neue Wurf eine neue Chance waere. So hat er
+    // heute schlicht keine Lust, und morgen vielleicht wieder.
+    bool SocialMoodRefuses(uint32 me, uint32 other, int32 companions,
+                           bool inviting)
+    {
+        if (!_cfg.sociabilityEnable || !me || !other)
+            return false;
+
+        // Menschen entscheiden selbst, und dich lehnt niemand ab.
+        if (IsHuman(me) || IsHuman(other))
+            return false;
+
+        int32 chance = SociabilityOf(me);
+
+        // Wen man mag, mit dem geht man mit - auch ungern.
+        if (_cfg.sociabilityAffinityDivisor > 0)
+            chance += AffinityOf(me, other)
+                    / _cfg.sociabilityAffinityDivisor;
+
+        // Selbst zu fragen kostet mehr Ueberwindung als ja zu sagen.
+        if (inviting)
+            chance -= _cfg.sociabilityInviteMalus;
+
+        // Je mehr Leute schon dabei sind, desto eher bleibt der Stille
+        // lieber allein.
+        if (companions > 0)
+            chance -= companions * _cfg.sociabilityPerMemberMalus;
+
+        if (chance < _cfg.sociabilityFloor)
+            chance = _cfg.sociabilityFloor;
+        if (chance >= 100)
+            return false;
+
+        // Stabiler Wurf: aus den beiden Kennungen und dem Zeitfenster.
+        uint32 bucket = _cfg.sociabilityMoodHours
+                      ? uint32(time(nullptr) / (_cfg.sociabilityMoodHours * 3600))
+                      : 0;
+
+        uint32 seed = me * 2654435761u;
+        seed ^= other * 40503u;
+        seed ^= bucket * 2246822519u;
+        seed ^= seed >> 15;
+
+        return int32(seed % 100u) >= chance;
+    }
+
     int32 ReputationOf(uint32 guid)
     {
         std::lock_guard<std::recursive_mutex> guard(_graphMutex);
@@ -1406,6 +1464,13 @@ void LoadConfig()
     _cfg.reputationPerGrudge = sConfigMgr->GetOption<int32>("BotSocial.Reputation.PerGrudge", 3);
     _cfg.reputationPerFavour = sConfigMgr->GetOption<int32>("BotSocial.Reputation.PerFavour", 1);
 
+    _cfg.sociabilityEnable            = sConfigMgr->GetOption<bool>("BotSocial.Sociability.Enable", false);
+    _cfg.sociabilityInviteMalus       = sConfigMgr->GetOption<int32>("BotSocial.Sociability.InviteMalus", 10);
+    _cfg.sociabilityPerMemberMalus    = sConfigMgr->GetOption<int32>("BotSocial.Sociability.PerMemberMalus", 3);
+    _cfg.sociabilityAffinityDivisor   = sConfigMgr->GetOption<int32>("BotSocial.Sociability.AffinityDivisor", 4);
+    _cfg.sociabilityMoodHours         = sConfigMgr->GetOption<uint32>("BotSocial.Sociability.MoodHours", 6);
+    _cfg.sociabilityFloor             = sConfigMgr->GetOption<int32>("BotSocial.Sociability.Floor", 5);
+
     _cfg.gossipEnable       = sConfigMgr->GetOption<bool>("BotSocial.Gossip.Enable", false);
     _cfg.gossipMinSeverity  = sConfigMgr->GetOption<int32>("BotSocial.Gossip.MinSeverity", 25);
     _cfg.gossipMinTrust     = sConfigMgr->GetOption<int32>("BotSocial.Gossip.MinTrust", 40);
@@ -1848,21 +1913,56 @@ void OnDuelFinished(Player* winner, Player* loser)
 
 bool WouldRefuseGroup(Player* player, Group* group)
 {
-    if (!_cfg.enable || !_cfg.avoidEnable || !player || !group)
+    if (!_cfg.enable || !player || !group)
         return false;
 
     uint32 me = player->GetGUID().GetCounter();
 
-    for (uint32 other : GroupMemberLowGuids(group))
+    std::vector<uint32> members = GroupMemberLowGuids(group);
+
+    if (_cfg.avoidEnable)
     {
-        if (other == me)
-            continue;
+        for (uint32 other : members)
+        {
+            if (other == me)
+                continue;
 
-        // Never refuse because of the human. You are always welcome.
-        if (IsHuman(other) && !_cfg.playerCanBeIgnored)
-            continue;
+            // Never refuse because of the human. You are always welcome.
+            if (IsHuman(other) && !_cfg.playerCanBeIgnored)
+                continue;
 
-        if (AffinityOf(me, other) <= _cfg.avoidThreshold)
+            if (AffinityOf(me, other) <= _cfg.avoidThreshold)
+                return true;
+        }
+    }
+
+    // Niemanden zu hassen heisst nicht, mitgehen zu wollen. Wie voll die
+    // Gruppe schon ist, zaehlt mit - und wenn ein Mensch dabei ist, wird
+    // grundsaetzlich nicht abgelehnt.
+    if (_cfg.sociabilityEnable)
+    {
+        int32  companions = 0;
+        uint32 anchorMate = 0;
+
+        for (uint32 other : members)
+        {
+            if (other == me)
+                continue;
+            if (IsHuman(other))
+                return false;
+
+            ++companions;
+
+            // Bezugspunkt fuer den Wurf ist der Bot, den dieser hier am
+            // liebsten mag - mit einem Freund in der Gruppe faellt das
+            // Ja leichter.
+            if (!anchorMate
+                || AffinityOf(me, other) > AffinityOf(me, anchorMate))
+                anchorMate = other;
+        }
+
+        if (anchorMate
+            && SocialMoodRefuses(me, anchorMate, companions - 1, false))
             return true;
     }
 
@@ -1871,7 +1971,9 @@ bool WouldRefuseGroup(Player* player, Group* group)
 
 bool WouldRefuseInvite(Player* player, std::string const& targetName)
 {
-    if (!_cfg.enable || !_cfg.avoidEnable || !player || targetName.empty())
+    if (!_cfg.enable || !player || targetName.empty())
+        return false;
+    if (!_cfg.avoidEnable && !_cfg.sociabilityEnable)
         return false;
 
     uint32 target = 0;
@@ -1881,8 +1983,15 @@ bool WouldRefuseInvite(Player* player, std::string const& targetName)
     if (IsHuman(target) && !_cfg.playerCanBeIgnored)
         return false;
 
-    return AffinityOf(player->GetGUID().GetCounter(), target)
-           <= _cfg.avoidThreshold;
+    uint32 me = player->GetGUID().GetCounter();
+
+    if (_cfg.avoidEnable
+        && AffinityOf(me, target) <= _cfg.avoidThreshold)
+        return true;
+
+    // Selbst jemanden anzusprechen kostet mehr Ueberwindung, als auf
+    // eine Einladung ja zu sagen - deshalb inviting = true.
+    return SocialMoodRefuses(me, target, 0, true);
 }
 
 // ---- lifecycle ----------------------------------------------------------

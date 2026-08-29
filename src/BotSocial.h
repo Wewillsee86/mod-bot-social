@@ -123,6 +123,19 @@ namespace BotSocial
         int32  reputationPerGrudge = 3;
         int32  reputationPerFavour = 1;
 
+        // ---- Geselligkeit: nicht jeder will in eine Gruppe ----
+        //
+        // Jeder Bot wuerfelt beim ersten Kontakt eine Geselligkeit von 0
+        // bis 100; ein Einzelgaenger liegt bei 0 bis 20. Bisher stand die
+        // Zahl nur in der Datenbank. Hier entscheidet sie mit, ob jemand
+        // ueberhaupt zusammen spielen will - als Neigung, nicht als Mauer.
+        bool   sociabilityEnable   = false;
+        int32  sociabilityInviteMalus   = 10; // selbst fragen kostet Ueberwindung
+        int32  sociabilityPerMemberMalus = 3; // je voller die Gruppe, desto eher nein
+        int32  sociabilityAffinityDivisor = 4; // mit Freunden geht auch ein Muffel mit
+        uint32 sociabilityMoodHours = 6;  // so lange bleibt die Laune dieselbe
+        int32  sociabilityFloor    = 5;   // auch ein Eremit sagt manchmal ja
+
         // ---- Geruechte: Groll verbreitet sich ueber Freunde ----
         //
         // Bisher war der Ruf koerperlos: der Server wusste sofort, wer

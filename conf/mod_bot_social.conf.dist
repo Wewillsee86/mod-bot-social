@@ -637,3 +637,70 @@ BotSocial.Gossip.DecayFactor = 3
 #       Default: 0
 #
 BotSocial.Gossip.AboutPlayers = 0
+
+###############################################################################
+# GESELLIGKEIT
+###############################################################################
+
+#
+#   BotSocial.Sociability.Enable
+#       Jeder Bot wuerfelt beim ersten Kontakt eine Geselligkeit von 0
+#       bis 100 — ein Einzelgaenger liegt zwischen 0 und 20, ein
+#       Instanzgaenger zwischen 55 und 90. Bisher stand die Zahl nur in
+#       der Datenbank und tat nichts.
+#
+#       Mit diesem Schalter entscheidet sie mit, ob ein Bot ueberhaupt
+#       zusammen spielen will: die Geselligkeit ist die Wahrscheinlichkeit
+#       in Prozent, eine Einladung anzunehmen. Als Neigung, nicht als
+#       Mauer — und dich lehnt nie jemand ab.
+#       Default: 0
+#
+BotSocial.Sociability.Enable = 0
+
+#
+#   InviteMalus
+#       Jemanden selbst anzusprechen kostet mehr Ueberwindung, als auf
+#       eine Einladung ja zu sagen. Dieser Wert wird beim Einladen von
+#       der Geselligkeit abgezogen.
+#       Default: 10
+#
+BotSocial.Sociability.InviteMalus = 10
+
+#
+#   PerMemberMalus
+#       Je voller die Gruppe schon ist, desto eher bleibt der Stille
+#       lieber allein. Pro bereits anwesendem Mitglied (ohne den
+#       Einladenden) so viele Punkte Abzug.
+#       Default: 3
+#
+BotSocial.Sociability.PerMemberMalus = 3
+
+#
+#   AffinityDivisor
+#       Mit jemandem, den man mag, geht auch ein Muffel mit: die Bindung
+#       geteilt durch diesen Wert kommt auf die Geselligkeit obendrauf.
+#       Bei 4 macht eine Bindung von 200 aus einem Einzelgaenger fuer
+#       diesen einen Freund einen umgaenglichen Menschen. 0 schaltet es ab.
+#       Default: 4
+#
+BotSocial.Sociability.AffinityDivisor = 4
+
+#
+#   MoodHours
+#       Wie lange die Laune eines Bots gegenueber einem bestimmten
+#       anderen gleich bleibt. Das ist wichtiger, als es aussieht: ohne
+#       ein solches Fenster waere jede neue Anfrage ein neuer Wurf, und
+#       ein Einzelgaenger landete nach genug Versuchen doch in jeder
+#       Gruppe. So hat er heute schlicht keine Lust — und morgen
+#       vielleicht wieder.
+#       Default: 6
+#
+BotSocial.Sociability.MoodHours = 6
+
+#
+#   Floor
+#       Untergrenze der Zusagewahrscheinlichkeit. Auch ein Eremit sagt
+#       manchmal ja, sonst verschwindet er ganz aus dem Spiel.
+#       Default: 5
+#
+BotSocial.Sociability.Floor = 5
