@@ -751,7 +751,7 @@ Führe eines der folgenden Skripte im Modul-Root aus:
 - **Windows PowerShell:** `apply-playerbots-patches.ps1`
 - **Windows CMD:** `apply-playerbots-patches.bat`
 
-Die Skripte prüfen, ob `mod-playerbots` installiert ist, wenden die Patches via `git apply` an und sind idempotent (wiederholte Ausführung ist sicher). Bei Konflikten wird auf vorgepatchte Dateien zurückgegriffen.
+Die Skripte prüfen, ob `mod-playerbots` installiert ist, wenden die Patches via `git apply` an und sind idempotent (wiederholte Ausführung ist sicher). Zusätzlich lesen sie `playerbots.conf` und melden, wenn `AiPlayerbot.RandomBotGuildCount` nicht `0` ist — geschrieben wird die Datei nie.
 
 ### Manuelle Installation
 
@@ -763,11 +763,11 @@ Falls die Skripte nicht funktionieren:
    git apply --whitespace=nowarn ../mod-bot-social/patches/01-playerbots-reactdelay.patch
    git apply --whitespace=nowarn ../mod-bot-social/patches/02-playerbots-guildcache-nullcheck.patch
    ```
-3. Falls `git apply` fehlschlägt (z.B. wegen Upstream-Änderungen), kopiere die vorgepatchten Dateien aus `patches/playerbots/`:
+3. Schlägt `git apply` fehl, hat mod-playerbots die Stelle geändert. **Es gibt bewusst keine vorgepatchte Kopie zum Zurückfallen** — sie würde überschreiben, was seither an der Datei repariert wurde, und zwar lautlos. Sieh dir den Konflikt an und ziehe den Patch nach:
    ```bash
-   cp ../mod-bot-social/patches/playerbots/src/Bot/PlayerbotAI.cpp src/Bot/PlayerbotAI.cpp
-   cp ../mod-bot-social/patches/playerbots/src/Mgr/Guild/PlayerbotGuildMgr.cpp src/Mgr/Guild/PlayerbotGuildMgr.cpp
+   git apply --3way ../mod-bot-social/patches/01-playerbots-reactdelay.patch
    ```
+   Die Patches sind klein und absichtlich am Stück gehalten, damit genau das in Minuten erledigt ist.
 
 ---
 
@@ -785,7 +785,7 @@ Run one of the following scripts in the module root:
 - **Windows PowerShell:** `apply-playerbots-patches.ps1`
 - **Windows CMD:** `apply-playerbots-patches.bat`
 
-The scripts check if `mod-playerbots` is installed, apply the patches via `git apply`, and are idempotent (safe to run multiple times). On conflicts, they fall back to pre-patched files.
+The scripts check if `mod-playerbots` is installed, apply the patches via `git apply`, and are idempotent (safe to run multiple times). They also read `playerbots.conf` and report when `AiPlayerbot.RandomBotGuildCount` is not `0` — the file itself is never written.
 
 ### Manual Installation
 
@@ -797,11 +797,11 @@ If the scripts don't work:
    git apply --whitespace=nowarn ../mod-bot-social/patches/01-playerbots-reactdelay.patch
    git apply --whitespace=nowarn ../mod-bot-social/patches/02-playerbots-guildcache-nullcheck.patch
    ```
-3. If `git apply` fails (e.g. due to upstream changes), copy the pre-patched files from `patches/playerbots/`:
+3. If `git apply` fails, mod-playerbots changed that spot. **There is deliberately no pre-patched copy to fall back on** — it would silently overwrite whatever has been fixed in that file since. Look at the conflict and carry the patch over:
    ```bash
-   cp ../mod-bot-social/patches/playerbots/src/Bot/PlayerbotAI.cpp src/Bot/PlayerbotAI.cpp
-   cp ../mod-bot-social/patches/playerbots/src/Mgr/Guild/PlayerbotGuildMgr.cpp src/Mgr/Guild/PlayerbotGuildMgr.cpp
+   git apply --3way ../mod-bot-social/patches/01-playerbots-reactdelay.patch
    ```
+   The patches are small and deliberately kept in one piece so that this takes minutes.
 
 ## Lizenz
 
