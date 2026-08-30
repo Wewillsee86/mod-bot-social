@@ -1,7 +1,7 @@
 {
   "id": "mod-bot-social",
   "name": "Bot Social Graph",
-  "description": "Persistent social relationships for playerbots - bots remember who they played with and act on it: friends, grudges, recruitment, promotions, and guild schisms.",
+  "description": "Persistent social relationships for playerbots - bots remember who they played with and act on it. Six independent layers per bot (activity, character, gear motive, availability, career stage, anchor); guilds are founded organically by cliques instead of at server start.",
   "author": {
     "name": "Wewillsee86",
     "url": "https://github.com/Wewillsee86"
@@ -10,42 +10,65 @@
     "type": "git",
     "url": "https://github.com/Wewillsee86/mod-bot-social"
   },
-  "version": "1.0.0",
+  "version": "2.0.0",
   "azerothcore": {
     "min": "master",
     "build": 3335
   },
-  "categories": ["modules", "playerbots", "ai", "social"],
-  "tags": ["playerbots", "social", "bots", "ai", "relationships", "guilds"],
+  "categories": [
+    "modules",
+    "playerbots",
+    "ai",
+    "social"
+  ],
+  "tags": [
+    "playerbots",
+    "social",
+    "bots",
+    "ai",
+    "relationships",
+    "guilds"
+  ],
   "license": "AGPL-3.0",
   "icon": "icon.png",
   "screenshots": [],
   "dependencies": {
-    "required": ["mod-playerbots"],
+    "required": [
+      "mod-playerbots"
+    ],
     "optional": []
   },
   "installation": {
     "type": "module",
     "steps": [
       "Clone into modules/ directory",
+      "Run apply-playerbots-patches.ps1 (optional patches, and it checks AiPlayerbot.RandomBotGuildCount)",
+      "Set AiPlayerbot.RandomBotGuildCount = 0 in playerbots.conf - guild founding replaces it",
       "Rebuild with CMake",
-      "Start worldserver (creates tables)",
+      "Start worldserver (creates tables, applies SQL updates)",
       "Enable in mod_bot_social.conf",
       "Reload config with .reload config"
     ]
   },
   "features": [
-    "One-sided affection model (A likes B ≠ B likes A)",
+    "One-sided affection model (A likes B != B likes A)",
     "Dunbar limit prevents infinite bond growth",
     "Grudges fade slower than friendships",
     "First impression bonus",
-    "Archetype friction (questor vs pvper etc)",
-    "Optional ReactDelay patch: skill affects bot reaction time",
-    "Guild recruitment based on bonds",
+    "Six independent layers per bot - what a bot DOES no longer dictates who it IS",
+    "Layer 1 activity: questor, dungeoneer, raider, pvper, gatherer, explorer, collector",
+    "Layer 2 character: five normal traits plus a heavy-tailed sadism roll (Volkmer 2023)",
+    "Layer 3 gear motive: derived from activity, stage and guild - never rolled",
+    "Layer 4 availability: four time profiles drawn JOINTLY, incl. a night profile across midnight",
+    "Layer 5 career stage: entry, practice, mastery, burnout, recovery",
+    "Layer 6 anchor: the one person a bot keeps logging in for - earned, never rolled",
+    "Guilds founded organically from mutual bonds, replacing playerbots' start-up guilds",
+    "Guild recruitment weighs overlapping play windows",
     "Automatic promotions",
     "Guild schisms when cliques split",
     "Server-wide reputation system",
     "In-game inspection commands (.social stats/bonds/grudges/who)",
+    "Optional ReactDelay patch: skill affects bot reaction time",
     "Fully configurable without restart (OnAfterConfigLoad hook)",
     "No dependency link to mod-playerbots"
   ],
@@ -56,12 +79,14 @@
   "database": {
     "tables": [
       "bot_social_bond",
-      "bot_social_profile", 
+      "bot_social_profile",
       "bot_social_guild",
       "bot_social_event"
     ],
     "schema": "data/sql/db-characters/base/bot_social_tables.sql",
-    "updates": "data/sql/db-characters/updates/"
+    "updates": "data/sql/db-characters/updates/",
+    "migration_required": true,
+    "migration_note": "Upgrading from 1.x REQUIRES 20260830_00_bot_social_layers.sql (14 new columns on bot_social_profile, 2 on bot_social_guild). It runs through AzerothCore's UpdateFetcher. Existing profiles keep bonds, reputation and activity; their layer values are rolled the next time each bot does something social - rows still waiting carry stage_since = 0 and should be excluded from statistics."
   },
   "commands": [
     {
@@ -78,7 +103,7 @@
     },
     {
       "name": ".social who <name>",
-      "description": "Show profile: archetype, skill, sociability, reputation"
+      "description": "Full profile: all six layers, skill tier and reputation"
     }
   ],
   "patches": [
@@ -105,5 +130,13 @@
     "homepage": "https://github.com/Wewillsee86/mod-bot-social",
     "issues": "https://github.com/Wewillsee86/mod-bot-social/issues",
     "documentation": "https://github.com/Wewillsee86/mod-bot-social#readme"
-  }
+  },
+  "conflicts": [
+    {
+      "setting": "AiPlayerbot.RandomBotGuildCount",
+      "module": "mod-playerbots",
+      "required_value": "0",
+      "reason": "mod-playerbots creates guilds at server start and fills them with arbitrary bots, including level 1 characters that never met. BotSocial.Found replaces that; both at once makes no sense. The module logs an error at every start when the value is not 0, and the patch installer warns before you build. Neither ever writes playerbots.conf - that file belongs to another module."
+    }
+  ]
 }

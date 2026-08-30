@@ -168,7 +168,7 @@ BotSocial.Recruit.GuildCooldown = 900
 #       Default: 12 / 45
 #
 BotSocial.Recruit.TargetSizeMin = 12
-BotSocial.Recruit.TargetSizeMax = 45
+BotSocial.Recruit.TargetSizeMax = 40
 
 #
 #   BotSocial.Recruit.GuildCapacityCap
@@ -185,7 +185,7 @@ BotSocial.Recruit.TargetSizeMax = 45
 #       setzt sich stattdessen durch. Ist beides 0, gilt keine Grenze.
 #       Default: 0
 #
-BotSocial.Recruit.GuildCapacityCap = 0
+BotSocial.Recruit.GuildCapacityCap = 40
 
 #
 #   BotSocial.Recruit.MinAffinity
@@ -704,3 +704,490 @@ BotSocial.Sociability.MoodHours = 6
 #       Default: 5
 #
 BotSocial.Sociability.Floor = 5
+
+###############################################################################
+#
+#   WESEN
+#
+#   Bis hierher leitete der Archetyp die Geselligkeit und den Ehrgeiz eines
+#   Bots ab. Damit folgte die Persoenlichkeit der Taetigkeit - wer raidet,
+#   war ehrgeizig. Dafuer gibt es keinen empirischen Beleg: Bartle, Yee und
+#   Quantic Foundry messen alle die Taetigkeitsebene, die Big Five und die
+#   Dunkle Tetrade die Dispositionsebene, und die Kopplung ist schwach.
+#
+#   Ein Bot besteht jetzt aus sechs Schichten:
+#     1 Taetigkeit    was er tut          (archetype)
+#     2 Wesen         wie er dabei ist    (unten)
+#     3 Beweggrund    wofuer              (abgeleitet, nicht gewuerfelt)
+#     4 Verfuegbarkeit wann und wie lange (unten)
+#     5 Verlauf       wo im eigenen Bogen (Ereignisse, nicht Zeitgeber)
+#     6 Anker         aeussere Bindung    (wird verdient)
+#
+#   'casual' und 'loner' sind als Archetypen entfallen: das eine war ein
+#   Zeitprofil, das andere ein Wesenszug.
+#
+###############################################################################
+
+#
+#    BotSocial.Layers.Enable
+#        Schicht 2 bis 6 ueberhaupt wuerfeln. Aus bedeutet: neue Bots
+#        bekommen die Vorgabewerte der Tabelle und verhalten sich wie
+#        vorher. Nichts geht dabei verloren.
+#        Vorgabe: 1
+#
+
+BotSocial.Layers.Enable = 1
+
+#
+#    BotSocial.Traits.Mean / .Spread
+#        Wesenszuege sind normalverteilt: die Masse in der Mitte, die
+#        Raender duenn. Streuung 18 heisst, rund zwei Drittel liegen
+#        zwischen 32 und 68. Bei 0 waeren alle Bots gleich.
+#        Vorgabe: 50 / 18
+#
+
+BotSocial.Traits.Mean = 50
+BotSocial.Traits.Spread = 18
+
+#
+#    BotSocial.Traits.Affect
+#        Sollen die Wesenszuege ueberhaupt wirken? Aus heisst: sie werden
+#        weiterhin gewuerfelt und angezeigt, aendern aber nichts. Zum
+#        Vergleichen brauchbar, sonst anlassen.
+#        Vorgabe: 1
+#
+
+BotSocial.Traits.Affect = 1
+
+#
+#    BotSocial.Traits.GrudgeSwing
+#        Wie stark die Vertraeglichkeit die Grollhoehe verschiebt, in
+#        Prozentpunkten je Punkt Abstand von 50. Bei 80:
+#
+#            Vertraeglichkeit  1  ->  Groll x1,39
+#            Vertraeglichkeit 50  ->  Groll x1,00
+#            Vertraeglichkeit 99  ->  Groll x0,61
+#
+#        Nur Negatives wird skaliert. Dass Freundlichkeit auch dankbarer
+#        macht, waere eine zweite Behauptung ohne Beleg.
+#        0 = aus.
+#        Vorgabe: 80
+#
+
+BotSocial.Traits.GrudgeSwing = 80
+
+#
+#    BotSocial.Traits.AvoidSwing
+#        Dasselbe fuer die Meideschwelle (Avoid.Threshold). Bei 40 und
+#        einer Grundschwelle von -30:
+#
+#            Vertraeglichkeit  1  ->  meidet schon ab -11
+#            Vertraeglichkeit 50  ->  meidet ab -30
+#            Vertraeglichkeit 99  ->  meidet erst ab -49
+#
+#        Vorgabe: 40
+#
+
+BotSocial.Traits.AvoidSwing = 40
+
+#
+#    BotSocial.Traits.ForgiveFrom / .GrudgeHoldBelow
+#        Ab welcher Vertraeglichkeit Groll jede Zerfallsrunde verblasst
+#        statt nur jede Decay.NegativeDivisor-te - und unterhalb welcher
+#        er nur halb so oft verblasst.
+#
+#        Mit den Vorgaben verzeihen rund 14 % der Bots schnell und rund
+#        14 % tragen lange nach; die Mitte bleibt beim Normalzerfall.
+#        Vorgabe: 70 / 30
+#
+
+BotSocial.Traits.ForgiveFrom = 70
+BotSocial.Traits.GrudgeHoldBelow = 30
+
+
+#
+#    BotSocial.Sadism.*
+#        Sadismus ist NICHT normalverteilt. Volkmer und Kollegen (2023,
+#        vorregistriert, N = 1026) zeigen ueber Quantilregression, dass er
+#        nur die oberen Quantile der Trollneigung erklaert - fuer niedrige
+#        Werte sagt er nichts. Ein durchgehender Regler waere also falsch.
+#        Deshalb: die Masse liegt nahe null, ein schmaler Rand liegt hoch.
+#
+#        TailPercent  wie viele Bots TailFloor erreichen
+#        QuietMax     Obergrenze des ruhigen Topfes
+#        TailFloor    Schwelle, die genau TailPercent erreichen
+#
+#        Die erste Fassung zog aus zwei Toepfen: 0..QuietMax und
+#        TailFloor..100. Das erfuellt die Vorgabe, riss aber ein Loch -
+#        zwischen 16 und 39 existierte in 3518 Profilen NIEMAND, der Wert
+#        war damit in Wahrheit binaer. Jetzt hat der obere Topf einen
+#        Verlauf und beginnt direkt ueber QuietMax; sein Exponent wird so
+#        gewaehlt, dass der Anteil ueber TailFloor exakt TailPercent
+#        bleibt. Gemessen bei N = 3518: 90,6 % ruhig, 4,7 % dazwischen,
+#        4,6 % ab 40.
+#
+#        Achterbosch misst 8,0 % regelmaessige Taeter (N = 656). Die
+#        Vorgabe liegt bewusst DARUNTER: bei mehreren tausend Bots waeren
+#        acht Prozent schon ueber zweihundertfuenfzig Stoerenfriede, und
+#        die Studie zaehlt Menschen, die auch mal aufhoeren. Wer mehr
+#        Aerger will, dreht hier - nicht an Traits.Spread.
+#        Vorgabe: 5 / 15 / 40
+#
+
+BotSocial.Sadism.TailPercent = 5
+BotSocial.Sadism.QuietMax = 15
+BotSocial.Sadism.TailFloor = 40
+
+###############################################################################
+#
+#   VERFUEGBARE ZEIT
+#
+#   Wann jemand kann, wie lange am Stueck, und wie verlaesslich. Das ist
+#   eine eigene Schicht, keine Haltung: "Gelegenheitsspieler" beschreibt
+#   meist einen Kalender, keinen Charakter. Yee und Kollegen (2012) zeigen
+#   an Armory-Daten, dass Eltern und Partner seltener raiden - nach
+#   Kontrolle von Alter und Geschlecht. Der Abend ist nicht der Typ.
+#
+###############################################################################
+
+#
+#    BotSocial.Time.Weight*
+#        Vier Zeitprofile, gewichtet. Die fuenf Bestandteile der
+#        Verfuegbarkeit werden GEMEINSAM gezogen - einzeln gewuerfelt
+#        entstuenden unmoegliche Menschen, etwa drei Stunden am Stueck und
+#        trotzdem jederzeit weg.
+#
+#        Evening    Feierabend, langer Block, verlaesslich, selten weg
+#        Alongside  nebenher, kurz, oft weg, sagt ungern zu
+#        Heavy      viel Zeit, breites Fenster
+#        Night      faengt ab 22 Uhr an, laeuft ueber Mitternacht
+#
+#        Night ist nachgetragen worden. Ohne dieses Profil endete der
+#        Serverabend um 22 Uhr und zwischen 23 und 7 begann kein einziges
+#        Fenster - fuer ein Spiel, dessen Feierabendgipfel real bis nach
+#        Mitternacht laeuft, war das die groebste Luecke der Schicht.
+#        Fenster duerfen den Tageswechsel kreuzen, die Deckungsrechnung
+#        rechnet modulo 24.
+#
+#        Die Taetigkeit schiebt zusaetzlich: ein Raider landet haeufiger
+#        im Feierabendprofil, ein Sammler haeufiger im Nebenher-Profil.
+#        Sie bestimmt es aber nicht.
+#        Vorgabe: 40 / 35 / 13 / 12
+#
+
+BotSocial.Time.WeightEvening = 40
+BotSocial.Time.WeightAlongside = 35
+BotSocial.Time.WeightHeavy = 13
+BotSocial.Time.WeightNight = 12
+
+#
+#    BotSocial.Time.Minutes*
+#        Spielzeit pro Woche in Minuten. Vorgabe nach dem Daedalus-Projekt
+#        (Juli 2005, WoW): Mittel 22,7 Stunden, Standardabweichung 14,1.
+#        Die Streuung ist das Eigentliche - viele bei acht Stunden, ein
+#        Schwanz jenseits vierzig.
+#        Vorgabe: 1360 / 846 / 180 / 4200
+#
+
+BotSocial.Time.MinutesMean = 1360
+BotSocial.Time.MinutesSpread = 846
+BotSocial.Time.MinutesMin = 180
+BotSocial.Time.MinutesMax = 4200
+
+#
+#    BotSocial.Time.InstanceMinBlock / .InstanceMaxInterrupt
+#        Wer so kurz am Stueck kann UND so oft weg muss, betritt keine
+#        Instanz. WoW-Instanzen lassen sich nicht pausieren; das Design
+#        selbst setzt Unterbrechung mit Unzuverlaessigkeit gleich.
+#
+#        Das ist KEINE Prozentangabe - wie viele es trifft, faellt aus dem
+#        Schnitt beider Bedingungen hinten raus. Gemessen an 3270 Bots:
+#
+#            Block <45 und Unterbrechung >70   18,0 %
+#            Block <40 und Unterbrechung >80    8,8 %   <- Vorgabe
+#            Block <35 und Unterbrechung >75    8,5 %
+#            Block <30 und Unterbrechung >85    3,0 %
+#
+#        Zu viele davon leeren die Gruppensuche, zu wenige machen aus
+#        jedem Nebenherspieler einen Dungeongaenger.
+#        Vorgabe: 40 / 80
+#
+
+BotSocial.Time.InstanceMinBlock = 40
+BotSocial.Time.InstanceMaxInterrupt = 80
+
+###############################################################################
+#
+#   ANKER
+#
+###############################################################################
+
+#
+#    BotSocial.Anchor.*
+#        Ein Anker ist die Bindung von aussen - der Grund, warum jemand
+#        ein Spiel spielt, das er allein langweilig faende. Er wird
+#        VERDIENT, nie gewuerfelt: gemeinsam durchgestandene Dungeons und
+#        gemeinsame Zeit, nicht die Zuneigungszahl, die breit ist und
+#        verfaellt. Wer einen hat, bekommt keinen zweiten.
+#
+#        Der Anker darf auf einen menschlichen Spieler zeigen. Auf einem
+#        Server mit einem Menschen und dreihundert Bots ist das der
+#        Unterschied zwischen Mitspieler und Kulisse. Zu viele davon
+#        machen aus der Welt allerdings ein Wartezimmer - hoch ansetzen.
+#        Vorgabe: 4 / 240
+#
+
+BotSocial.Anchor.MinDungeons = 4
+BotSocial.Anchor.MinMinutes = 240
+
+#
+#    BotSocial.Anchor.Enable
+#        Duerfen Anker ueberhaupt entstehen?
+#        Vorgabe: 1
+#
+
+BotSocial.Anchor.Enable = 1
+
+#
+#    BotSocial.Anchor.BreakAt
+#        Ab welchem einzelnen Schlag der Anker reisst. Aeussere Bindungen
+#        enden an einem Bruch, nicht daran, dass man sich langsam
+#        entfremdet - deshalb ein Ereignis, kein Verfall.
+#        Vorgabe: 40
+#
+
+BotSocial.Anchor.BreakAt = 40
+
+###############################################################################
+#
+#   ABBRUCH MIT URSACHE
+#
+#   Wer eine Instanz mitten im Lauf verlaesst, macht sich damit bei fuenf
+#   Leuten gleichzeitig unbeliebt. Bisher sah jeder Abbruch gleich aus -
+#   in der Zuneigungszahl wie im Protokoll.
+#
+#   Es sind aber zwei verschiedene Menschen: der nette Unzuverlaessige,
+#   dessen Sitzung endet, und das zuverlaessige Ekel, das einfach geht.
+#   Beide sammeln Groll, nur der Grund unterscheidet sie.
+#
+###############################################################################
+
+#
+#    BotSocial.Bail.ReasonEnable
+#        Aus heisst: jeder Abbruch kostet gleich viel, wie vorher.
+#        Vorgabe: 1
+#
+
+BotSocial.Bail.ReasonEnable = 1
+
+#
+#    BotSocial.Bail.ExcuseFrom / .ExcusePercent
+#        Ab dieser Unterbrechbarkeit gilt der Abbruch als "musste weg" und
+#        kostet nur noch diesen Anteil. Das Ereignis heisst dann
+#        'bailed_life' statt 'bailed' - im Protokoll unterscheidbar.
+#        Vorgabe: 70 / 40
+#
+
+BotSocial.Bail.ExcuseFrom = 70
+BotSocial.Bail.ExcusePercent = 40
+
+#
+#    BotSocial.Bail.AggravateBelow / .AggravatePercent
+#        Wer haette bleiben koennen und trotzdem geht: unter dieser
+#        Gewissenhaftigkeit wiegt der Abbruch schwerer.
+#        Vorgabe: 30 / 150
+#
+
+BotSocial.Bail.AggravateBelow = 30
+BotSocial.Bail.AggravatePercent = 150
+
+###############################################################################
+#
+#   GILDEN ENTSTEHEN AUS CLIQUEN
+#
+#   mod-playerbots kann Gilden beim Serverstart am Fliessband anlegen und
+#   wahllos Bots hineinstecken - schon auf Stufe 1, ohne dass die Leute
+#   sich je begegnet waeren. Fuer dieses Modul ist das der falsche Weg
+#   herum: eine Gilde soll entstehen, WEIL sich jemand kennt.
+#
+#   Setze deshalb in playerbots.conf:
+#
+#       AiPlayerbot.RandomBotGuildCount = 0
+#
+#   Der Zeitgeber unten ist nur das Nachsehen. Ob gegruendet wird,
+#   entscheidet die Lage: ein Bot mit Ehrgeiz, der genug Leute kennt, die
+#   IHN auch moegen und einander vertragen - und die gerade zusammen
+#   online sind. Damit haengt die Gruendung auch am Zeitfenster: eine
+#   Clique, die nie gleichzeitig spielt, gruendet nichts.
+#
+###############################################################################
+
+#
+#    BotSocial.Found.Enable
+#        Vorgabe: 1
+#
+
+BotSocial.Found.Enable = 1
+
+#
+#    BotSocial.Found.Interval / .ServerCooldown
+#        Wie oft nachgesehen wird, und wie viel Zeit zwischen zwei
+#        Gruendungen auf dem ganzen Server mindestens liegt. Der Abstand
+#        ist wichtiger als das Nachsehen: er sorgt dafuer, dass Gilden
+#        nach und nach entstehen statt alle an einem Abend.
+#        Vorgabe: 900 / 3600
+#
+
+BotSocial.Found.Interval = 900
+BotSocial.Found.ServerCooldown = 3600
+
+#
+#    BotSocial.Found.MaxGuilds
+#        Obergrenze fuer bot-gefuehrte Gilden. 0 = keine.
+#        Vorgabe: 60
+#
+
+BotSocial.Found.MaxGuilds = 60
+
+#
+#    BotSocial.Found.MinFriends / .MinBond
+#        So viele Bekannte muessen mitkommen, und so stark muss die
+#        Bindung sein - in BEIDE Richtungen. Einseitige Zuneigung
+#        gruendet keine Gilde, das waere ein Fanclub.
+#        MinBond 0 nimmt Friends.Threshold - was meist zu hoch ist:
+#        "steht auf meiner Freundesliste" und "mit dem gruende ich eine
+#        Gilde" duerfen verschiedene Dinge heissen.
+#
+#        An 105.836 gemessenen Bindungen (30.08., Durchschnitt 4 Punkte,
+#        hoechste 322) sah der Schnitt so aus - Bots mit vier beidseitigen
+#        Bekannten ueber der Schwelle:
+#
+#             40 -> 2354 Anwaerter    das waere jeder
+#             60 -> 1833
+#             80 ->   57              <- Vorgabe
+#            100 ->    2
+#            150 ->    0
+#
+#        Der Bruch zwischen 60 und 80 ist der Punkt, an dem aus einer
+#        Clique der Normalfall wird. Von den 57 muessen ausserdem Ehrgeiz,
+#        Geselligkeit, Stufe und gleichzeitige Anwesenheit stimmen - es
+#        bleiben wenige, und das ist gewollt.
+#
+#        Zusaetzlich darf sich in der Runde niemand meiden: zwei Leute,
+#        die einander nicht ausstehen, gruenden nichts zusammen.
+#        Vorgabe: 4 / 80
+#
+
+BotSocial.Found.MinFriends = 4
+BotSocial.Found.MinBond = 80
+
+#
+#    BotSocial.Found.MinAmbition / .MinSociability / .MinLevel
+#        Wer gruendet, will etwas und mag Leute. Und er sollte das Spiel
+#        ein wenig kennen - eine Gilde von Stufe-1-Charakteren ist genau
+#        das, was wir mod-playerbots gerade abgewoehnt haben.
+#        Vorgabe: 60 / 45 / 10
+#
+
+BotSocial.Found.MinAmbition = 60
+BotSocial.Found.MinSociability = 45
+BotSocial.Found.MinLevel = 10
+
+#
+#    BotSocial.Found.NameEnglishPercent / .NameHumorPercent
+#        Wie die Gilden heissen. Recherchiert statt erfunden: auf
+#        deutschen Realms sind englische Gildennamen voellig ueblich und
+#        waren es immer - neben deutschen Lore-Namen und alltaeglichem
+#        Humor. Ein Server, auf dem alles gleich klingt, wirkt gebaut.
+#
+#            englisch    "Ashen Legion", "Touch of the Storm"
+#            deutsch     "Die Eiserne Front", "Kinder der Nacht",
+#                        "Sternenwind"
+#            Humor       "AFK Bier holen", "Pyjamahelden"
+#
+#        Der Rest auf 100 sind die deutschen Namen. Deutsche Namen
+#        richten sich zusaetzlich nach der Taetigkeit des Gruenders: ein
+#        Raider gruendet "Die Eisernen Klingen", ein Sammler "Die Goldene
+#        Zunft". Ueber siebenhundert Namen sind moeglich.
+#
+#        Das Spiel erlaubt 2 bis 24 Zeichen, keine Ziffern, keine
+#        Sonderzeichen; zu lange Vorschlaege werden verworfen.
+#        Vorgabe: 40 / 15
+#
+
+BotSocial.Found.NameEnglishPercent = 40
+BotSocial.Found.NameHumorPercent = 15
+
+
+###############################################################################
+#
+#   ZEITFENSTER ALS GILDENIDENTITAET
+#
+#   Feierabendgilden, Sonntagsgilden, Nachtschichtgilden - eine Gilde ist
+#   auch ein Zeitfenster. Es wird nicht gesetzt, sondern aus den Fenstern
+#   ihrer Mitglieder abgeleitet und in bot_social_guild mitgeschrieben.
+#
+#   Williams 2006: der haeufigste Austrittsgrund aus einer Gilde ist nicht
+#   Streit, sondern dass die eigenen Ziele nicht mehr zu denen der Gilde
+#   passen. Die Uhrzeit ist der Teil davon, den wir messen koennen.
+#
+###############################################################################
+
+#
+#    BotSocial.GuildWindow.Enable
+#        Aus heisst: Anwerbung und Spaltung achten nicht auf die Uhrzeit,
+#        wie vorher. Das Fenster wird dann auch nicht mitgeschrieben.
+#        Vorgabe: 1
+#
+
+BotSocial.GuildWindow.Enable = 1
+
+#
+#    BotSocial.Recruit.WindowBonus
+#        Punkte je Stunde Ueberschneidung zwischen dem Fenster des
+#        Bewerbers und dem der Gilde. Nicht weil er beliebter waere -
+#        sondern weil man ihn ueberhaupt trifft.
+#        0 = aus.
+#        Vorgabe: 8
+#
+
+BotSocial.Recruit.WindowBonus = 8
+
+#
+#    BotSocial.Recruit.MinSociability
+#        Wer so ungesellig ist, tritt nichts bei. Ersetzt den frueheren
+#        Archetyp 'loner': das war nie eine Taetigkeit, sondern ein
+#        Wesenszug, und der Filter darauf lief nach dem Umbau ins Leere.
+#        Vorgabe: 20
+#
+
+BotSocial.Recruit.MinSociability = 20
+
+#
+#    BotSocial.Schism.WindowGapMax / .TimeBonus
+#        Wessen Fenster sich mit dem der Gilde hoechstens so viele Stunden
+#        ueberschneidet, gilt als jemand, der ohnehin wenig von ihr hat -
+#        und bekommt beim Anzetteln einer Spaltung diesen Vorsprung auf
+#        den noetigen Rueckhalt (Schism.CliqueBond).
+#        Vorgabe: 1 / 40
+#
+
+BotSocial.Schism.WindowGapMax = 1
+BotSocial.Schism.TimeBonus = 40
+
+
+
+#
+#    BotSocial.FlushMaxStatements
+#        Hoechstzahl Datenbankanweisungen je Schreibrunde. Was nicht mehr
+#        hineinpasst, bleibt vorgemerkt und geht in der naechsten Runde
+#        raus - '.social stats' zeigt den Rueckstand unter "ungeschrieben".
+#        Bei mehreren tausend Bots verhindert das, dass gleich nach einer
+#        Wanderung die halbe Bevoelkerung in einer einzigen Transaktion
+#        landet und die Charakterdatenbank festhaelt.
+#        0 = keine Grenze.
+#        Vorgabe: 2000
+#
+
+BotSocial.FlushMaxStatements = 2000
+

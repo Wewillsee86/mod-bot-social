@@ -65,10 +65,33 @@ CREATE TABLE IF NOT EXISTS `bot_social_profile` (
     `skill_tier`    TINYINT UNSIGNED NOT NULL DEFAULT 2,
     `sociability`   TINYINT UNSIGNED NOT NULL DEFAULT 50,
     `ambition`      TINYINT UNSIGNED NOT NULL DEFAULT 50,
+    -- Schicht 2: Wesen, unabhaengig vom Archetyp
+    `agreeableness`     TINYINT UNSIGNED NOT NULL DEFAULT 50,
+    `honesty`           TINYINT UNSIGNED NOT NULL DEFAULT 50,
+    `conscientiousness` TINYINT UNSIGNED NOT NULL DEFAULT 50,
+    `sadism`            TINYINT UNSIGNED NOT NULL DEFAULT 0,
+    -- Schicht 3: Beweggrund, abgeleitet
+    `gear_motive` ENUM('means','number','display','ticket','duty')
+                  NOT NULL DEFAULT 'means',
+    -- Schicht 4: Verfuegbarkeit. Vorgaben = Populationsmittel,
+    -- nicht das Profil eines Raiders.
+    `play_minutes_week`  SMALLINT UNSIGNED NOT NULL DEFAULT 1360,
+    `prime_hour`         TINYINT  UNSIGNED NOT NULL DEFAULT 18,
+    `prime_span`         TINYINT  UNSIGNED NOT NULL DEFAULT 2,
+    `block_minutes`      SMALLINT UNSIGNED NOT NULL DEFAULT 60,
+    `commit_reliability` TINYINT  UNSIGNED NOT NULL DEFAULT 50,
+    `interruptibility`   TINYINT  UNSIGNED NOT NULL DEFAULT 50,
+    -- Schicht 5: Verlauf
+    `stage` ENUM('entry','practice','mastery','burnout','recovery')
+            NOT NULL DEFAULT 'entry',
+    `stage_since` INT UNSIGNED NOT NULL DEFAULT 0,
+    -- Schicht 6: aeussere Bindung, wird verdient
+    `anchor_guid` INT UNSIGNED NOT NULL DEFAULT 0,
     `reputation`    INT NOT NULL DEFAULT 0,
     `created_at`    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (`bot_guid`),
-    KEY `idx_reputation` (`reputation`)
+    KEY `idx_reputation` (`reputation`),
+    KEY `idx_anchor` (`anchor_guid`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ---------------------------------------------------------------
@@ -81,6 +104,11 @@ CREATE TABLE IF NOT EXISTS `bot_social_profile` (
 CREATE TABLE IF NOT EXISTS `bot_social_guild` (
     `guild_id`      INT UNSIGNED NOT NULL,
     `target_size`   SMALLINT UNSIGNED NOT NULL DEFAULT 10,
+    -- Normen der Gilde: dieselbe Tat wird hier anders bewertet als dort
+    `loot_rule` ENUM('roll','msos','council','dkp') NOT NULL DEFAULT 'roll',
+    `interrupt_tolerance` TINYINT UNSIGNED NOT NULL DEFAULT 50,
+    `prime_hour` TINYINT UNSIGNED NOT NULL DEFAULT 18,
+    `prime_span` TINYINT UNSIGNED NOT NULL DEFAULT 3,
     `recruited`     INT UNSIGNED NOT NULL DEFAULT 0,
     `last_recruit`  TIMESTAMP NULL DEFAULT NULL,
     `last_schism`   TIMESTAMP NULL DEFAULT NULL,

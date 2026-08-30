@@ -1,0 +1,11 @@
+# Einmalige Reparaturen einer bestimmten Installation - gehoeren nicht ins
+# Repo. Das allgemein nuetzliche Nachzieh-Skript liegt unter tools/.
+reroll-archetypen.sql
+fix-casual-loner-klone.sql
+reroll-zeit-und-sadismus.sql
+
+# Build- und Editorreste
+*.user
+*.suo
+.vs/
+build/

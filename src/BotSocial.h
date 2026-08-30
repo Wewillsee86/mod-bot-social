@@ -167,6 +167,103 @@ namespace BotSocial
         // how to recognise a bot-led guild without linking playerbots
         std::string authDatabase     = "acore_auth";
         std::string botAccountPrefix = "RNDBOT";
+
+        // ---- Schichten (Fassung 2) --------------------------------------
+        // Wesen wird jetzt unabhaengig vom Archetyp gewuerfelt. Vorher leitete
+        // ArchetypeDef Geselligkeit und Ehrgeiz aus der Taetigkeit ab - die
+        // Forschung stuetzt diesen Schluss nicht.
+        bool   layersEnable        = true;
+
+        // Schicht 2: Wesen. Normalverteilt, hart auf 1..99.
+        int32  traitMean           = 50;
+        int32  traitSpread         = 18;
+
+        // Sadismus ist nicht normalverteilt: die Masse liegt nahe null,
+        // ein schmaler Rand liegt hoch. Volkmer 2023 zeigt, dass Sadismus
+        // nur die oberen Quantile erklaert, nicht das niedrige Niveau.
+        uint32 sadismTailPercent   = 5;  // so viele landen im Rand
+        uint32 sadismQuietMax      = 15;  // Obergrenze des ruhigen Topfes
+        uint32 sadismTailLo        = 40;  // Schwelle, die 5 % erreichen
+
+        // Schicht 4: Zeitprofile. Die fuenf Bestandteile werden GEMEINSAM
+        // gezogen, nicht einzeln - sonst entstehen unmoegliche Menschen.
+        uint32 timeWeightEvening   = 40;  // Feierabend, langer Block
+        uint32 timeWeightAlongside = 35;  // nebenher, kurz, unterbrechbar
+        uint32 timeWeightHeavy     = 13;  // viel Zeit, breites Fenster
+        uint32 timeWeightNight     = 12;  // nach 22 Uhr, ueber Mitternacht
+        uint32 playMinutesMean     = 1360; // 22,7 h/Woche (Daedalus 2005)
+        uint32 playMinutesSpread   = 846;  // SD 14,1 h
+        uint32 playMinutesMin      = 180;
+        uint32 playMinutesMax      = 4200;
+
+        // Wer so kurz kann und so oft weg muss, betritt keine Instanz.
+        uint32 instanceMinBlock     = 40;
+        uint32 instanceMaxInterrupt = 80;
+
+        // Schicht 6: Anker werden verdient, nie gewuerfelt.
+        bool   anchorEnable        = true;
+        uint32 anchorMinDungeons   = 4;
+        uint32 anchorMinMinutes    = 240;
+        int32  anchorBreakAt       = 40;  // ab diesem Schlag reisst er
+
+        // ---- Gilden entstehen aus Cliquen (Schritt 3c) ------------------
+        // mod-playerbots setzt Bots beim Serverstart wahllos in Gilden
+        // (AiPlayerbot.RandomBotGuildCount). Das ist genau das, was dieses
+        // Modul nicht will: eine Gilde soll entstehen, WEIL sich Leute
+        // kennen. RandomBotGuildCount gehoert deshalb auf 0.
+        bool   foundEnable         = true;
+        uint32 foundInterval       = 900;    // so oft wird geschaut
+        uint32 foundServerCooldown = 3600;   // hoechstens eine Gruendung je
+        uint32 foundMaxGuilds      = 60;     // Obergrenze fuer Botgilden
+        uint32 foundMinFriends     = 4;      // so viele muessen mitkommen
+        int32  foundMinBond        = 80;     // 0 = Friends.Threshold nehmen
+        uint32 foundMinAmbition    = 60;     // wer gruendet, will etwas
+        uint32 foundMinSociability = 45;
+        uint32 foundMinLevel       = 10;
+        // Namenstil. Auf deutschen Realms sind englische Gildennamen
+        // ueblich und waren es immer; Humor ist eine kraeftige Minderheit.
+        uint32 nameEnglishPercent  = 40;
+        uint32 nameHumorPercent    = 15;
+
+        // ---- Zeitfenster als Gildenidentitaet (Schritt 3b) --------------
+        // Feierabendgilden, Sonntagsgilden, Nachtschichtgilden: eine Gilde
+        // ist auch ein Zeitfenster. Wer nicht hineinpasst, wird seltener
+        // angeworben und spaltet leichter ab.
+        bool   guildWindowEnable   = true;
+        int32  recruitWindowBonus  = 8;   // je Stunde Ueberschneidung
+        uint32 recruitMinSociability = 20; // darunter tritt niemand bei
+        uint32 schismWindowGapMax  = 1;   // so wenig Ueberschneidung = fremd
+        int32  schismTimeBonus     = 40;  // Vorsprung fuer den Abweichler
+
+        // ---- Der Abbruch bekommt eine Ursache (Schritt 3) ---------------
+        // Wer die Instanz verlaesst, weil seine Sitzung endet, ist etwas
+        // anderes als wer einfach geht. Bisher sah beides gleich aus - in
+        // der Zuneigungszahl wie im Protokoll.
+        bool   bailReasonEnable    = true;
+        uint32 bailExcuseFrom      = 70;  // ab dieser Unterbrechbarkeit
+        int32  bailExcusePercent   = 40;  // so viel Groll bleibt
+        uint32 bailAggravateBelow  = 30;  // unter dieser Gewissenhaftigkeit
+        int32  bailAggravatePercent = 150; // so viel Groll wird daraus
+
+        // ---- Schicht 2 wirkt (Schritt 2) --------------------------------
+        // Vertraeglichkeit entscheidet, wie schwer jemand etwas nimmt und
+        // wie lange er es nachtraegt. Ehrlichkeit und Gewissenhaftigkeit
+        // bleiben absichtlich noch stumm: die eine braucht den Beutewurf
+        // (Schritt 5), die andere Zusagen (Schritt 3). Werte zu benutzen,
+        // bevor es das Ereignis dazu gibt, waere erfundene Kausalitaet.
+        bool   traitsAffect        = true;
+        int32  traitGrudgeSwing    = 80;  // Ausschlag auf die Grollhoehe
+        int32  traitAvoidSwing     = 40;  // Ausschlag auf die Meideschwelle
+        uint32 traitForgiveFrom    = 70;  // ab hier verblasst Groll jede Runde
+        uint32 traitGrudgeHoldBelow = 30; // darunter halb so oft
+
+        // Hoechstzahl Anweisungen je Schreibrunde. Ohne das laege beim
+        // ersten Start nach der Wanderung die gesamte Bevoelkerung in
+        // einer einzigen Transaktion - bei mehreren tausend Bots und
+        // zwanzigspaltigen Profilzeilen haelt das die Charakterdatenbank
+        // unnoetig lange fest. Der Rest bleibt schmutzig und geht in der
+        // naechsten Runde raus; '.social stats' zeigt den Rueckstand.
+        uint32 flushMaxStatements  = 2000;
     };
 
     Config const& Cfg();
@@ -232,10 +329,32 @@ namespace BotSocial
 
     struct ProfileRow
     {
+        // Schicht 1: Taetigkeit
         std::string archetype;
+        // Koennen - eigene Groesse, weder Wesen noch Taetigkeit
         uint32      skillTier    = 2;
+        // Schicht 2: Wesen
         uint32      sociability  = 50;
         uint32      ambition     = 50;
+        uint32      agreeableness     = 50;
+        uint32      honesty           = 50;
+        uint32      conscientiousness = 50;
+        uint32      sadism            = 0;
+        // Schicht 3: Beweggrund (abgeleitet, nicht gewuerfelt)
+        std::string gearMotive   = "means";
+        // Schicht 4: Verfuegbarkeit
+        uint32      playMinutesWeek   = 1360;
+        uint32      primeHour         = 18;
+        uint32      primeSpan         = 2;
+        uint32      blockMinutes      = 60;
+        uint32      commitReliability = 50;
+        uint32      interruptibility  = 50;
+        // Schicht 5: Verlauf
+        std::string stage        = "entry";
+        // Schicht 6: Anker (0 = keiner)
+        uint32      anchorGuid   = 0;
+        std::string anchorName;
+
         int32       reputation   = 0;
         bool        found        = false;
     };

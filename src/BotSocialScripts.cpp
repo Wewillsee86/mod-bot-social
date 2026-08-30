@@ -385,11 +385,39 @@ public:
         }
 
         handler->PSendSysMessage("{}:", name);
-        handler->PSendSysMessage("  Spielertyp:  {}", p.archetype);
+        handler->PSendSysMessage("  Taetigkeit:   {}", p.archetype);
         handler->PSendSysMessage("  Spielstaerke: {} von 5", p.skillTier);
-        handler->PSendSysMessage("  Geselligkeit: {}", p.sociability);
-        handler->PSendSysMessage("  Ehrgeiz:      {}", p.ambition);
         handler->PSendSysMessage("  Ruf:          {}", p.reputation);
+
+        handler->PSendSysMessage("  -- Wesen --");
+        handler->PSendSysMessage("  Geselligkeit:  {}", p.sociability);
+        handler->PSendSysMessage("  Ehrgeiz:       {}", p.ambition);
+        handler->PSendSysMessage("  Vertraeglichk: {}", p.agreeableness);
+        handler->PSendSysMessage("  Ehrlichkeit:   {}", p.honesty);
+        handler->PSendSysMessage("  Gewissenhaft:  {}", p.conscientiousness);
+        handler->PSendSysMessage("  Sadismus:      {}{}", p.sadism,
+                                 p.sadism >= 40 ? "  (auffaellig)" : "");
+
+        handler->PSendSysMessage("  -- Zeit --");
+        handler->PSendSysMessage("  Woche:         {} h {} min",
+                                 p.playMinutesWeek / 60,
+                                 p.playMinutesWeek % 60);
+        handler->PSendSysMessage("  Fenster:       {}:00 bis {}:00 Uhr",
+                                 p.primeHour,
+                                 (p.primeHour + p.primeSpan) % 24);
+        handler->PSendSysMessage("  Am Stueck:     {} min", p.blockMinutes);
+        handler->PSendSysMessage("  Verlaesslich:  {}", p.commitReliability);
+        handler->PSendSysMessage("  Muss oft weg:  {}", p.interruptibility);
+
+        handler->PSendSysMessage("  -- Beweggrund und Verlauf --");
+        handler->PSendSysMessage("  Ausruestung:   {}", p.gearMotive);
+        handler->PSendSysMessage("  Stufe:         {}", p.stage);
+
+        if (p.anchorGuid)
+            handler->PSendSysMessage("  Anker:         {}", p.anchorName);
+        else
+            handler->PSendSysMessage("  Anker:         noch keiner");
+
         return true;
     }
 

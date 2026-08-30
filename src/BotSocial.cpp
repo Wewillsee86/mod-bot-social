@@ -22,15 +22,18 @@
 #include "ObjectAccessor.h"
 #include "Player.h"
 #include "QueryResult.h"
+#include "SharedDefines.h"   // TeamId / TEAM_ALLIANCE fuer die Gruendung
 #include "SocialMgr.h"
 #include "World.h"
 #include "WorldSession.h"
 #include "WorldSessionMgr.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <map>
 #include <mutex>
+#include <shared_mutex>
 #include <random>
 #include <set>
 #include <sstream>
@@ -76,10 +79,32 @@ namespace
 
     struct Profile
     {
+        // Schicht 1: Taetigkeit
         std::string archetype = "unset";
+        // Koennen: eigene Groesse
         uint32 skillTier   = 2;
+        // Schicht 2: Wesen - unabhaengig vom Archetyp gewuerfelt
         uint32 sociability = 50;
         uint32 ambition    = 50;
+        uint32 agreeableness     = 50;
+        uint32 honesty           = 50;
+        uint32 conscientiousness = 50;
+        uint32 sadism            = 0;
+        // Schicht 3: Beweggrund - abgeleitet aus 1, 5 und Gilde
+        std::string gearMotive = "means";
+        // Schicht 4: Verfuegbarkeit - die fuenf Teile gehoeren zusammen
+        uint32 playMinutesWeek   = 1360;
+        uint32 primeHour         = 18;
+        uint32 primeSpan         = 2;
+        uint32 blockMinutes      = 60;
+        uint32 commitReliability = 50;
+        uint32 interruptibility  = 50;
+        // Schicht 5: Verlauf
+        std::string stage = "entry";
+        uint32 stageSince = 0;
+        // Schicht 6: Anker - wird verdient, nie gewuerfelt
+        uint32 anchorGuid = 0;
+
         int32  reputation  = 0;
         bool   dirty       = false;
     };
@@ -96,6 +121,8 @@ namespace
     uint32 _rankTimer    = 0;
     uint32 _decayTimer   = 0;
     uint32 _schismTimer  = 0;
+    uint32 _foundTimer   = 0;
+    time_t _lastFound    = 0;
     uint32 _decayRound   = 0;
 
     uint64 _schismTotal    = 0;
@@ -113,6 +140,27 @@ namespace
             return lo;
         std::uniform_int_distribution<uint32> dist(lo, hi);
         return dist(Rng());
+    }
+
+    // Normalverteilt, hart gekappt. Fuer die Wesenszuege: die Masse sitzt
+    // in der Mitte, die Raender sind duenn - anders als bei RollBetween,
+    // wo jeder Wert gleich haeufig ist.
+    uint32 RollNormal(int32 mean, int32 spread, uint32 lo, uint32 hi)
+    {
+        if (spread <= 0)
+            return uint32(mean < int32(lo) ? lo
+                        : mean > int32(hi) ? hi : uint32(mean));
+
+        // Nicht dist(double(mean), double(spread)) schreiben: das wird als
+        // Funktionsdeklaration geparst (most vexing parse) und kompiliert
+        // nicht. Erst benennen, dann uebergeben.
+        double const m = double(mean);
+        double const sd = double(spread);
+        std::normal_distribution<double> dist(m, sd);
+        double v = dist(Rng());
+        if (v < double(lo)) v = double(lo);
+        if (v > double(hi)) v = double(hi);
+        return uint32(v + 0.5);
     }
 
     ObjectGuid MakeGuid(uint32 low)
@@ -175,6 +223,19 @@ namespace
 
     // Applies one side of an interaction. Callers pass a different
     // Touch per direction, because liking is not symmetric.
+    // Definiert unterhalb von Apply, weil es dort gelesen wird, wo es
+    // hingehoert - der Aufruf steht am Ende von Apply.
+    void MaybeAnchor(uint32 from, uint32 to, Edge const& e,
+                     Touch const& t, int32 weight);
+
+    // Die Zugriffe auf die Wesenszuege stehen weiter unten bei den
+    // uebrigen Profilhelfern, werden aber schon hier gebraucht: die
+    // Vertraeglichkeit skaliert den Groll in Apply und steuert den
+    // Grollzerfall in DecayTick.
+    int32  AgreeablenessOf(uint32 guid);
+    uint32 InterruptibilityOf(uint32 guid);
+    uint32 ConscientiousnessOf(uint32 guid);
+
     void Apply(uint32 from, uint32 to, Touch const& t)
     {
         if (!from || !to || from == to)
@@ -191,6 +252,22 @@ namespace
         if (!t.ignoreFirstImpression
             && e.encounters < _cfg.firstImpressions)
             weight *= _cfg.firstImpressionMul;
+
+        // Wie schwer jemand etwas nimmt, haengt an ihm, nicht an der Tat.
+        // 'from' ist der, der den Groll traegt. Nur Negatives wird
+        // skaliert: Freundlichkeit macht dankbarer zu behaupten, waere
+        // eine zweite Behauptung ohne Beleg.
+        if (_cfg.traitsAffect && weight < 0)
+        {
+            int32 agr = AgreeablenessOf(from);
+            int32 factor = 100 + (50 - agr) * _cfg.traitGrudgeSwing / 100;
+            if (factor < 20)  factor = 20;
+            if (factor > 200) factor = 200;
+
+            weight = weight * factor / 100;
+            if (!weight)
+                weight = -1;   // ganz verzeihen tut auch der Sanfteste nicht
+        }
 
         e.affinity += weight;
         e.grouped  += t.grouped;
@@ -214,6 +291,51 @@ namespace
         if (_cfg.traceEnable && !t.kind.empty()
             && std::abs(weight) >= _cfg.traceMinWeight)
             LogEvent(from, to, t.kind, "", weight, t.mapId, t.zoneId);
+
+        MaybeAnchor(from, to, e, t, weight);
+    }
+
+    // Schicht 6. Ein Anker wird verdient, nie gewuerfelt: aus gemeinsam
+    // Durchgestandenem, nicht aus der Zuneigungszahl. Die ist breit und
+    // verfaellt; ein Anker soll selten sein und bleiben.
+    //
+    // Deshalb haengt er am Dungeon-Ereignis und nicht an einem Zeitgeber:
+    // er entsteht in dem Moment, in dem die beiden etwas zusammen
+    // durchgestanden haben.
+    void MaybeAnchor(uint32 from, uint32 to, Edge const& e,
+                     Touch const& t, int32 weight)
+    {
+        if (!_cfg.anchorEnable)
+            return;
+
+        auto it = _profiles.find(from);
+        if (it == _profiles.end())
+            return;   // Menschen und Unbekannte bekommen keinen Anker
+
+        Profile& p = it->second;
+
+        // Reissen: ein schwerer Schlag von genau dem, an dem man haengt.
+        if (p.anchorGuid == to && weight <= -_cfg.anchorBreakAt)
+        {
+            p.anchorGuid = 0;
+            p.dirty = true;
+            LogEvent(from, to, "anchor_broken", "", weight,
+                     t.mapId, t.zoneId);
+            return;
+        }
+
+        if (p.anchorGuid || !t.dungeons)
+            return;   // wer einen hat, bekommt keinen zweiten
+
+        if (e.affinity <= 0
+            || e.dungeons < _cfg.anchorMinDungeons
+            || e.minutes  < _cfg.anchorMinMinutes)
+            return;
+
+        p.anchorGuid = to;
+        p.dirty = true;
+        LogEvent(from, to, "anchor_formed", "", e.affinity,
+                 t.mapId, t.zoneId);
     }
 
     void LogEvent(uint32 actor, uint32 target, std::string const& kind,
@@ -472,7 +594,11 @@ namespace
 
         QueryResult pres = CharacterDatabase.Query(
             "SELECT bot_guid, archetype, skill_tier, sociability, "
-            "ambition, reputation FROM bot_social_profile");
+            "ambition, reputation, agreeableness, honesty, "
+            "conscientiousness, sadism, gear_motive, play_minutes_week, "
+            "prime_hour, prime_span, block_minutes, commit_reliability, "
+            "interruptibility, stage, stage_since, anchor_guid "
+            "FROM bot_social_profile");
 
         uint32 profiles = 0;
         if (pres)
@@ -487,6 +613,20 @@ namespace
                 p.sociability = f[3].Get<uint8>();
                 p.ambition    = f[4].Get<uint8>();
                 p.reputation  = f[5].Get<int32>();
+                p.agreeableness     = f[6].Get<uint8>();
+                p.honesty           = f[7].Get<uint8>();
+                p.conscientiousness = f[8].Get<uint8>();
+                p.sadism            = f[9].Get<uint8>();
+                p.gearMotive        = f[10].Get<std::string>();
+                p.playMinutesWeek   = f[11].Get<uint16>();
+                p.primeHour         = f[12].Get<uint8>();
+                p.primeSpan         = f[13].Get<uint8>();
+                p.blockMinutes      = f[14].Get<uint16>();
+                p.commitReliability = f[15].Get<uint8>();
+                p.interruptibility  = f[16].Get<uint8>();
+                p.stage             = f[17].Get<std::string>();
+                p.stageSince        = f[18].Get<uint32>();
+                p.anchorGuid        = f[19].Get<uint32>();
                 p.dirty       = false;
                 ++profiles;
             } while (pres->NextRow());
@@ -501,13 +641,28 @@ namespace
     {
         std::vector<std::string> statements;
 
+        // Wer hier nicht drankommt, bleibt schmutzig und geht in der
+        // naechsten Runde raus. Nichts geht verloren, es dauert nur.
+        uint32 const budget = _cfg.flushMaxStatements
+                            ? _cfg.flushMaxStatements : 0xFFFFFFFFu;
+        bool full = false;
+
         {
             std::lock_guard<std::recursive_mutex> guard(_graphMutex);
 
             for (auto& node : _graph)
             {
+                if (full)
+                    break;
+
                 for (auto& edge : node.second)
                 {
+                    if (statements.size() >= budget)
+                    {
+                        full = true;
+                        break;
+                    }
+
                     Edge& e = edge.second;
                     if (!e.dirty)
                         continue;
@@ -550,6 +705,9 @@ namespace
 
             for (auto& entry : _profiles)
             {
+                if (statements.size() >= budget)
+                    break;
+
                 Profile& p = entry.second;
                 if (!p.dirty)
                     continue;
@@ -557,16 +715,42 @@ namespace
                 std::ostringstream sql;
                 sql << "INSERT INTO bot_social_profile "
                        "(bot_guid, archetype, skill_tier, sociability, "
-                       "ambition, reputation) VALUES ("
+                       "ambition, reputation, agreeableness, honesty, "
+                       "conscientiousness, sadism, gear_motive, "
+                       "play_minutes_week, prime_hour, prime_span, "
+                       "block_minutes, commit_reliability, interruptibility, "
+                       "stage, stage_since, anchor_guid) VALUES ("
                     << entry.first << ", '" << Escape(p.archetype) << "', "
                     << p.skillTier << ", " << p.sociability << ", "
-                    << p.ambition << ", " << p.reputation
+                    << p.ambition << ", " << p.reputation << ", "
+                    << p.agreeableness << ", " << p.honesty << ", "
+                    << p.conscientiousness << ", " << p.sadism << ", '"
+                    << Escape(p.gearMotive) << "', "
+                    << p.playMinutesWeek << ", " << p.primeHour << ", "
+                    << p.primeSpan << ", " << p.blockMinutes << ", "
+                    << p.commitReliability << ", " << p.interruptibility
+                    << ", '" << Escape(p.stage) << "', " << p.stageSince
+                    << ", " << p.anchorGuid
                     << ") ON DUPLICATE KEY UPDATE "
                        "archetype = '" << Escape(p.archetype)
                     << "', skill_tier = " << p.skillTier
                     << ", sociability = " << p.sociability
                     << ", ambition = " << p.ambition
-                    << ", reputation = " << p.reputation;
+                    << ", reputation = " << p.reputation
+                    << ", agreeableness = " << p.agreeableness
+                    << ", honesty = " << p.honesty
+                    << ", conscientiousness = " << p.conscientiousness
+                    << ", sadism = " << p.sadism
+                    << ", gear_motive = '" << Escape(p.gearMotive)
+                    << "', play_minutes_week = " << p.playMinutesWeek
+                    << ", prime_hour = " << p.primeHour
+                    << ", prime_span = " << p.primeSpan
+                    << ", block_minutes = " << p.blockMinutes
+                    << ", commit_reliability = " << p.commitReliability
+                    << ", interruptibility = " << p.interruptibility
+                    << ", stage = '" << Escape(p.stage)
+                    << "', stage_since = " << p.stageSince
+                    << ", anchor_guid = " << p.anchorGuid;
 
                 statements.push_back(sql.str());
                 p.dirty = false;
@@ -709,6 +893,20 @@ namespace
                     if (aboutHuman && _cfg.playerGrudgeSpeedup > 1)
                         tick = true;
 
+                    // Wer nachtraegt, traegt laenger nach. node.first ist
+                    // der Traeger des Grolls, nicht sein Ziel.
+                    if (_cfg.traitsAffect && !aboutHuman)
+                    {
+                        int32 agr = AgreeablenessOf(node.first);
+
+                        if (agr >= int32(_cfg.traitForgiveFrom))
+                            tick = true;
+                        else if (agr <= int32(_cfg.traitGrudgeHoldBelow)
+                                 && _cfg.decayNegativeDivisor)
+                            tick = (_decayRound
+                                    % (_cfg.decayNegativeDivisor * 2)) == 0;
+                    }
+
                     if (!tick || _cfg.decayNegative <= 0)
                         continue;
 
@@ -840,38 +1038,256 @@ namespace
 
     // ---- archetypes -----------------------------------------------------
 
-    // How people actually spent their time in WotLK. The weights are a
-    // rough head count of a mid-size realm, not a balance decision.
+    // Was jemand TUT, nicht wie er ist. Frueher standen hier auch
+    // Geselligkeit und Ehrgeiz - damit folgte die Persoenlichkeit der
+    // Taetigkeit. Dafuer gibt es keinen empirischen Beleg, also ist das
+    // Wesen jetzt Schicht 2 und wird unabhaengig gezogen.
+    //
+    // 'casual' und 'loner' sind entfallen: das eine war ein Zeitprofil,
+    // das andere ein Wesenszug. Beide entstehen jetzt an ihrer Schicht.
     struct ArchetypeDef
     {
         char const* name;
         uint32 weight;
-        uint32 sociabilityLo;
-        uint32 sociabilityHi;
-        uint32 ambitionLo;
-        uint32 ambitionHi;
+        // Neigung zu einem der vier Zeitprofile (0 = keine).
+        uint32 timeBias;
+    };
+
+    enum TimeProfile : uint32
+    {
+        TIME_NONE      = 0,
+        TIME_EVENING   = 1, // Feierabend, langer Block, verlaesslich
+        TIME_ALONGSIDE = 2, // nebenher, kurz, jederzeit weg
+        TIME_HEAVY     = 3, // viel Zeit, breites Fenster
+        TIME_NIGHT     = 4, // nach 22 Uhr, laeuft ueber Mitternacht
     };
 
     ArchetypeDef const kArchetypes[] = {
-        { "questor",    24, 30, 70, 20, 55 },  // levels, reads quests
-        { "dungeoneer", 18, 55, 90, 40, 75 },  // lives in the finder
-        { "raider",     10, 60, 95, 70, 100 }, // wants progress, impatient
-        { "pvper",      12, 35, 80, 45, 85 },  // battlegrounds
-        { "gatherer",   14, 15, 50, 25, 60 },  // professions, auctions
-        { "casual",     16, 25, 65, 10, 40 },  // on now and then
-        { "loner",       6,  0, 20,  5, 45 },  // never joins a guild
+        { "questor",    26, TIME_NONE      },
+        { "dungeoneer", 18, TIME_NONE      },
+        { "raider",     10, TIME_EVENING   },
+        { "pvper",      12, TIME_NONE      },
+        { "gatherer",   14, TIME_ALONGSIDE },
+        { "explorer",   10, TIME_ALONGSIDE },
+        { "collector",  10, TIME_NONE      },
     };
 
-    // Which pairings rub each other the wrong way.
+    // Welche Paarungen sich reiben. Progress gegen Gelegenheit steht hier
+    // NICHT mehr: das war nie ein Taetigkeitskonflikt, sondern einer der
+    // Zeitfenster. Er gehoert an Schicht 4 und kommt dort wieder.
     bool Clashes(std::string const& a, std::string const& b)
     {
-        if (a == "raider" && b == "casual") return true;
-        if (a == "casual" && b == "raider") return true;
-        if (a == "loner")                   return true;
-        if (b == "loner")                   return true;
-        if (a == "pvper" && b == "gatherer") return true;
-        if (a == "gatherer" && b == "pvper") return true;
+        if (a == "raider" && b == "collector") return true;
+        if (a == "collector" && b == "raider") return true;
+        if (a == "raider" && b == "explorer")  return true;
+        if (a == "explorer" && b == "raider")  return true;
+        if (a == "pvper" && b == "gatherer")   return true;
+        if (a == "gatherer" && b == "pvper")   return true;
         return false;
+    }
+
+    ArchetypeDef const* PickArchetype()
+    {
+        uint32 total = 0;
+        for (ArchetypeDef const& a : kArchetypes)
+            total += a.weight;
+
+        uint32 roll = RollBetween(1, total);
+        for (ArchetypeDef const& a : kArchetypes)
+        {
+            if (roll <= a.weight)
+                return &a;
+            roll -= a.weight;
+        }
+        return &kArchetypes[0];
+    }
+
+    // Sadismus ist nicht normalverteilt. Volkmer 2023 (vorregistriert,
+    // N = 1026) zeigt ueber Quantilregression, dass Sadismus nur die
+    // OBEREN Quantile der Trollneigung erklaert - fuer niedrige Werte
+    // sagt er nichts. Ein durchgehender Regler waere also falsch.
+    //
+    // Die erste Fassung zog dafuer aus ZWEI Toepfen: 95 % aus 0..QuietMax,
+    // 5 % aus TailFloor..100. Das erfuellt die Vorgabe, reisst aber ein
+    // Loch: zwischen 16 und 39 existierte in 3518 Profilen NIEMAND. Damit
+    // ist der Wert in Wahrheit binaer - jede spaetere Schwelle im Loch
+    // verhaelt sich wie eine bei TailFloor, es gibt keinen Verlauf.
+    //
+    // Der zweite Topf bleibt also, er bekommt nur einen VERLAUF statt
+    // einer Untergrenze - und er beginnt direkt ueber QuietMax, nicht
+    // erst bei TailFloor. Damit ist die Strecke dazwischen besetzt.
+    //
+    //   ruhiger Topf : Anteil 1 - 2p, gleichverteilt 0 .. QuietMax
+    //   Randtopf     : Anteil 2p,     Y = lo + (100-lo) * u^m
+    //                  mit lo = QuietMax + 1
+    //
+    // m wird so gewaehlt, dass GENAU die Haelfte des Randtopfes TailFloor
+    // erreicht. Dann liegt der Anteil ueber TailFloor bei 2p * 1/2 = p,
+    // also exakt bei TailPercent - die Einstellung behaelt ihre Bedeutung:
+    //
+    //     m = ln((TailFloor - lo) / (100 - lo)) / ln(1/2)
+    //
+    // Bei 5 % und 40 sind das rund 90 % ruhig, 5 % dazwischen, 5 % ab 40.
+    // Ein reines Potenzgesetz ueber den ganzen Bereich waere kuerzer, legt
+    // aber drei Viertel aller Bots auf die glatte Null - dieselbe Art von
+    // Artefakt, nur an anderer Stelle.
+    uint32 RollSadism()
+    {
+        uint32 const tailPct = _cfg.sadismTailPercent;
+        uint32 const floorAt = _cfg.sadismTailLo;
+        uint32 const quiet   = _cfg.sadismQuietMax;
+
+        uint32 const lo = quiet + 1;
+
+        // Entartete Einstellungen: kein Rand gewuenscht, oder kein Platz
+        // mehr zwischen ruhigem Topf und Obergrenze.
+        if (!tailPct || tailPct * 2 >= 100 || floorAt <= lo || floorAt >= 100)
+            return RollBetween(0, quiet > 100 ? 100 : quiet);
+
+        if (RollBetween(1, 100) > tailPct * 2)
+            return RollBetween(0, quiet);
+
+        double const m = std::log(double(floorAt - lo) / double(100 - lo)) /
+                         std::log(0.5);
+
+        // u aus (0,1] - die Null muss draussen bleiben.
+        double const u = double(RollBetween(1, 10000)) / 10000.0;
+
+        double const v = double(lo) + double(100 - lo) * std::pow(u, m);
+        long   const r = std::lround(v);
+
+        return uint32(r < 0 ? 0 : (r > 100 ? 100 : r));
+    }
+
+    // Die fuenf Bestandteile der Verfuegbarkeit gehoeren ZUSAMMEN gezogen.
+    // Einzeln gewuerfelt entstuenden unmoegliche Menschen: drei Stunden am
+    // Stueck und trotzdem jederzeit weg.
+    void RollTimeProfile(Profile& p, uint32 bias)
+    {
+        uint32 wEve = _cfg.timeWeightEvening;
+        uint32 wAlo = _cfg.timeWeightAlongside;
+        uint32 wHea = _cfg.timeWeightHeavy;
+        uint32 wNig = _cfg.timeWeightNight;
+
+        // Die Taetigkeit schiebt, sie bestimmt nicht. Ein Raider ist
+        // haeufiger, aber nicht zwingend Feierabendspieler.
+        if (bias == TIME_EVENING)   wEve += wEve;
+        if (bias == TIME_ALONGSIDE) wAlo += wAlo;
+        if (bias == TIME_HEAVY)     wHea += wHea;
+        if (bias == TIME_NIGHT)     wNig += wNig;
+
+        uint32 total = wEve + wAlo + wHea + wNig;
+        if (!total)
+            total = 1;
+
+        uint32 roll = RollBetween(1, total);
+        uint32 kind = roll <= wEve               ? TIME_EVENING
+                    : roll <= wEve + wAlo        ? TIME_ALONGSIDE
+                    : roll <= wEve + wAlo + wHea ? TIME_HEAVY
+                                                 : TIME_NIGHT;
+
+        switch (kind)
+        {
+            case TIME_EVENING:
+                p.primeHour         = RollBetween(19, 22);
+                p.primeSpan         = RollBetween(3, 5);
+                p.blockMinutes      = RollBetween(120, 240);
+                p.commitReliability = RollBetween(65, 95);
+                p.interruptibility  = RollBetween(5, 30);
+                break;
+
+            case TIME_ALONGSIDE:
+                p.primeHour         = RollBetween(8, 21);
+                p.primeSpan         = RollBetween(1, 3);
+                // Obergrenze 75 statt 60: zwischen 60 und 90 Minuten lag
+                // sonst dieselbe Art Loch wie beim Sadismus - niemand
+                // spielte eine Stunde und ein Viertel am Stueck, obwohl
+                // das die haeufigste Sitzung ueberhaupt ist.
+                p.blockMinutes      = RollBetween(20, 75);
+                p.commitReliability = RollBetween(15, 50);
+                p.interruptibility  = RollBetween(60, 95);
+                break;
+
+            case TIME_HEAVY:
+                p.primeHour         = RollBetween(12, 18);
+                p.primeSpan         = RollBetween(5, 9);
+                p.blockMinutes      = RollBetween(76, 200);
+                p.commitReliability = RollBetween(45, 85);
+                p.interruptibility  = RollBetween(20, 55);
+                break;
+
+            // Die Nachtschicht. Ohne sie endete der Serverabend um 22 Uhr
+            // und zwischen 23 und 7 war die Welt leer - fuer ein Spiel,
+            // dessen Feierabendgipfel real bis nach Mitternacht laeuft,
+            // ist das die groebste Luecke der ganzen Schicht.
+            //
+            // Der Beginn laeuft ueber Mitternacht (22, 23, 0, 1, 2). Das
+            // ist erlaubt: WindowOverlap und GuildWindow rechnen beide
+            // modulo 24, ein Fenster darf den Tageswechsel kreuzen.
+            default: // TIME_NIGHT
+                p.primeHour         = RollBetween(22, 26) % 24;
+                p.primeSpan         = RollBetween(3, 5);
+                p.blockMinutes      = RollBetween(76, 210);
+                p.commitReliability = RollBetween(50, 85);
+                p.interruptibility  = RollBetween(10, 40);
+                break;
+        }
+
+        // Daedalus 2005: Mittel 22,7 h/Woche, SD 14,1. Rechtsschief, also
+        // unten kappen statt zu spiegeln.
+        p.playMinutesWeek = RollNormal(int32(_cfg.playMinutesMean),
+                                       int32(_cfg.playMinutesSpread),
+                                       _cfg.playMinutesMin,
+                                       _cfg.playMinutesMax);
+    }
+
+    // Schicht 3 wird NICHT gewuerfelt. Sie folgt aus Taetigkeit, Verlauf
+    // und Gilde - sonst entstehen Kombinationen wie 'questor' + 'ticket',
+    // die es nicht gibt. Wird bei jedem Stufenwechsel neu gesetzt.
+    std::string DeriveGearMotive(Profile const& p, bool inGuild)
+    {
+        if (p.stage == "entry")
+            return "means";
+        if (p.stage == "burnout")
+            return "means";   // das Motiv verliert seine Zugkraft
+
+        if (inGuild && (p.archetype == "raider" ||
+                        p.archetype == "dungeoneer"))
+            return "duty";
+
+        if (p.ambition >= 70 && (p.archetype == "collector" ||
+                                 p.archetype == "pvper"))
+            return "display";
+
+        if (p.ambition >= 70)
+            return "number";
+
+        if (p.archetype == "raider" || p.archetype == "dungeoneer")
+            return "ticket";
+
+        return "means";
+    }
+
+    void RollLayers(Profile& p, ArchetypeDef const* def)
+    {
+        int32 mean   = _cfg.traitMean;
+        int32 spread = _cfg.traitSpread;
+
+        // Schicht 2 - vollstaendig unabhaengig vom Archetyp. Das ist die
+        // eigentliche Reparatur; im Schema steht davon nichts.
+        p.sociability       = RollNormal(mean, spread, 1, 99);
+        p.ambition          = RollNormal(mean, spread, 1, 99);
+        p.agreeableness     = RollNormal(mean, spread, 1, 99);
+        p.honesty           = RollNormal(mean, spread, 1, 99);
+        p.conscientiousness = RollNormal(mean, spread, 1, 99);
+        p.sadism            = RollSadism();
+
+        RollTimeProfile(p, def ? def->timeBias : TIME_NONE);
+
+        p.stage      = "entry";
+        p.stageSince = uint32(time(nullptr));
+        p.anchorGuid = 0;   // wird verdient, nie gewuerfelt
+        p.gearMotive = DeriveGearMotive(p, false);
     }
 
     Profile& EnsureProfile(uint32 guid)
@@ -880,39 +1296,76 @@ namespace
 
         auto it = _profiles.find(guid);
         if (it != _profiles.end())
-            return it->second;
-
-        uint32 total = 0;
-        for (ArchetypeDef const& a : kArchetypes)
-            total += a.weight;
-
-        uint32 roll = RollBetween(1, total);
-        ArchetypeDef const* chosen = &kArchetypes[0];
-        for (ArchetypeDef const& a : kArchetypes)
         {
-            if (roll <= a.weight)
+            Profile& old = it->second;
+
+            // stage_since == 0 heisst: dieses Profil stammt aus der Zeit
+            // vor den Schichten und hat nur die Spaltenvorgaben. Ohne das
+            // hier saehen alle Altbots gleich aus - Vertraeglichkeit 50,
+            // Fenster 18 Uhr, Block 60 - und der Roller wirkte kaputt.
+            if (_cfg.layersEnable && old.stageSince == 0)
             {
-                chosen = &a;
-                break;
+                // Die Wanderung markiert die zwei entfallenen Archetypen,
+                // weil ihre Taetigkeit nie erfasst wurde. Der Wesenszug
+                // beziehungsweise das Zeitprofil dahinter soll aber
+                // ueberleben - deshalb der Zusatz hinter dem Doppelpunkt.
+                bool wasLoner  = old.archetype == "unset:loner";
+                bool wasCasual = old.archetype == "unset:casual";
+
+                if (old.archetype.rfind("unset", 0) == 0)
+                    old.archetype = PickArchetype()->name;
+
+                ArchetypeDef const* def = nullptr;
+                for (ArchetypeDef const& a : kArchetypes)
+                    if (old.archetype == a.name)
+                        def = &a;
+
+                RollLayers(old, def);
+
+                // Was der alte Archetyp ueber den Bot wusste, nachtragen.
+                //
+                // Wichtig: BEREICHE, keine festen Zahlen. Feste Werte
+                // machen aus jedem ehemaligen 'casual' denselben Menschen
+                // - bei rund fuenfzehn Prozent der Bevoelkerung waere die
+                // Zeitschicht dort wertlos.
+                if (wasLoner && old.sociability > 25)
+                    old.sociability = RollBetween(1, 25);
+
+                if (wasCasual)
+                {
+                    if (old.blockMinutes > 60)
+                        old.blockMinutes = RollBetween(25, 60);
+                    if (old.playMinutesWeek > 800)
+                        old.playMinutesWeek = RollBetween(240, 800);
+                    if (old.commitReliability > 45)
+                        old.commitReliability = RollBetween(15, 45);
+                    if (old.interruptibility < 60)
+                        old.interruptibility = RollBetween(60, 90);
+                }
+
+                old.dirty = true;
             }
-            roll -= a.weight;
+
+            return old;
         }
 
+        ArchetypeDef const* chosen = PickArchetype();
+
         Profile& p = _profiles[guid];
-        p.archetype   = chosen->name;
-        p.sociability = RollBetween(chosen->sociabilityLo,
-                                    chosen->sociabilityHi);
-        p.ambition    = RollBetween(chosen->ambitionLo,
-                                    chosen->ambitionHi);
-        // 1 = poor, 5 = very good. Most people are average.
+        p.archetype = chosen->name;
+
+        // 1 = schwach, 5 = sehr gut. Die meisten sind Durchschnitt.
         uint32 tierRoll = RollBetween(1, 100);
         p.skillTier = tierRoll <= 10 ? 1
                     : tierRoll <= 30 ? 2
                     : tierRoll <= 70 ? 3
                     : tierRoll <= 92 ? 4 : 5;
         p.reputation = 0;
-        p.dirty = true;
 
+        if (_cfg.layersEnable)
+            RollLayers(p, chosen);
+
+        p.dirty = true;
         return p;
     }
 
@@ -931,6 +1384,111 @@ namespace
         std::lock_guard<std::recursive_mutex> guard(_graphMutex);
         auto it = _profiles.find(guid);
         return it == _profiles.end() ? 50 : int32(it->second.sociability);
+    }
+
+    // Wer kein Profil hat (oder ein Mensch ist), gilt als durchschnittlich
+    // vertraeglich, statt eines zu bekommen.
+    int32 AgreeablenessOf(uint32 guid)
+    {
+        std::lock_guard<std::recursive_mutex> guard(_graphMutex);
+        auto it = _profiles.find(guid);
+        return it == _profiles.end() ? 50 : int32(it->second.agreeableness);
+    }
+
+    // Wie viele Stunden zweier Zeitfenster sich ueberschneiden. Der Tag
+    // ist ein Kreis: 22 Uhr plus vier Stunden reicht bis 2 Uhr frueh.
+    uint32 WindowOverlap(uint32 h1, uint32 s1, uint32 h2, uint32 s2)
+    {
+        if (!s1 || !s2)
+            return 0;
+
+        bool slot[24] = { false };
+        for (uint32 i = 0; i < s1 && i < 24; ++i)
+            slot[(h1 + i) % 24] = true;
+
+        uint32 n = 0;
+        for (uint32 i = 0; i < s2 && i < 24; ++i)
+            if (slot[(h2 + i) % 24])
+                ++n;
+        return n;
+    }
+
+    // Das Zeitfenster einer Gilde ist nicht gesetzt, sondern das, was ihre
+    // Mitglieder daraus machen: die Stunde, zu der die meisten koennen,
+    // ausgedehnt solange die Nachbarstunde noch halb so gut besetzt ist.
+    void GuildWindow(std::vector<uint32> const& members,
+                     uint32& hourOut, uint32& spanOut)
+    {
+        std::lock_guard<std::recursive_mutex> guard(_graphMutex);
+
+        uint32 hist[24] = { 0 };
+        uint32 counted = 0;
+
+        for (uint32 m : members)
+        {
+            auto it = _profiles.find(m);
+            if (it == _profiles.end() || !it->second.primeSpan)
+                continue;
+
+            Profile const& p = it->second;
+            for (uint32 i = 0; i < p.primeSpan && i < 24; ++i)
+                ++hist[(p.primeHour + i) % 24];
+            ++counted;
+        }
+
+        if (!counted)
+        {
+            hourOut = 18;
+            spanOut = 3;
+            return;
+        }
+
+        uint32 peak = 0;
+        for (uint32 h = 1; h < 24; ++h)
+            if (hist[h] > hist[peak])
+                peak = h;
+
+        uint32 const floorCount = hist[peak] / 2;
+        uint32 start = peak;
+        uint32 span  = 1;
+
+        while (span < 24)
+        {
+            uint32 prev = (start + 23) % 24;
+            uint32 next = (start + span) % 24;
+            bool takePrev = hist[prev] > floorCount;
+            bool takeNext = hist[next] > floorCount;
+
+            if (!takePrev && !takeNext)
+                break;
+
+            if (takeNext && (!takePrev || hist[next] >= hist[prev]))
+            {
+                ++span;
+            }
+            else
+            {
+                start = prev;
+                ++span;
+            }
+        }
+
+        hourOut = start;
+        spanOut = span;
+    }
+
+    uint32 InterruptibilityOf(uint32 guid)
+    {
+        std::lock_guard<std::recursive_mutex> guard(_graphMutex);
+        auto it = _profiles.find(guid);
+        return it == _profiles.end() ? 50u : it->second.interruptibility;
+    }
+
+    uint32 ConscientiousnessOf(uint32 guid)
+    {
+        std::lock_guard<std::recursive_mutex> guard(_graphMutex);
+        auto it = _profiles.find(guid);
+        return it == _profiles.end() ? 50u : it->second.conscientiousness;
     }
 
     // Wuerde dieser Bot ablehnen, weil ihm heute nicht nach Gesellschaft
@@ -1009,7 +1567,381 @@ namespace
         return out;
     }
 
-    uint32 PickRecruit(Guild* guild, TeamId team)
+    // ---- Gilden entstehen aus Cliquen -----------------------------------
+    //
+    // mod-playerbots kann Gilden beim Serverstart am Fliessband anlegen und
+    // wahllos Bots hineinstecken. Fuer dieses Modul ist das der falsche
+    // Weg herum: eine Gilde soll entstehen, WEIL sich Leute kennen, nicht
+    // damit es Gilden gibt. AiPlayerbot.RandomBotGuildCount gehoert auf 0.
+    //
+    // Der Zeitgeber ist hier nur das Nachsehen. Ob gegruendet wird,
+    // entscheidet die Lage: ein Bot mit Ehrgeiz, der genug Leute kennt,
+    // die IHN auch moegen und einander vertragen - und die gerade
+    // zusammen online sind.
+
+    void RegisterBotGuilds();   // definiert unter FoundTick
+
+    // ---- Gildennamen ----------------------------------------------------
+    //
+    // Recherchiert statt erfunden: auf deutschen Realms sind englische
+    // Gildennamen voellig ueblich und waren es immer ("Touch of Destiny"),
+    // neben deutschen Lore-Namen ("Sternenwind", "Arme der Finsternis")
+    // und alltaeglichem Humor ("AFK Bier holen"). Ein Server, auf dem
+    // alles gleich klingt, wirkt gebaut.
+    //
+    // Harte Grenze des Spiels: 2 bis 24 Zeichen, keine Ziffern, keine
+    // Sonderzeichen. Leerzeichen und Umlaute sind erlaubt.
+
+    // Adjektivstamm ohne Endung - die haengt an der Zahl des Substantivs:
+    // "Die Eiserne Front", aber "Die Eisernen Klingen".
+    char const* kDeAdj[] = {
+        "Eisern", "Still", "Letzt", "Frei", "Alt", "Rot", "Schwarz",
+        "Golden", "Kalt", "Wild", "Fern", "Treu", "Grau", "Zweit",
+        "Stolz", "Blass", "Ewig", "Dunkl", "Weiß", "Jung",
+    };
+
+    struct DeNoun { char const* word; bool plural; };
+
+    DeNoun const kDeRaid[] = {
+        { "Front", false }, { "Faust", false }, { "Wache", false },
+        { "Klingen", true }, { "Legion", false }, { "Bastion", false },
+    };
+    DeNoun const kDePvp[] = {
+        { "Meute", false }, { "Jäger", true }, { "Krallen", true },
+        { "Wölfe", true }, { "Fehde", false }, { "Klingen", true },
+    };
+    DeNoun const kDeGath[] = {
+        { "Zunft", false }, { "Kammer", false }, { "Waage", false },
+        { "Kompanie", false }, { "Händler", true }, { "Werkstatt", false },
+    };
+    DeNoun const kDeExpl[] = {
+        { "Pfade", true }, { "Wanderer", true }, { "Weite", false },
+        { "Fernsicht", false }, { "Sucher", true }, { "Karte", false },
+    };
+    DeNoun const kDeAny[] = {
+        { "Runde", false }, { "Schar", false }, { "Gilde", false },
+        { "Bande", false }, { "Gefährten", true }, { "Sippe", false },
+    };
+
+    char const* kDeHead[] = {
+        "Orden", "Ritter", "Wächter", "Arme", "Kinder", "Erben", "Hüter",
+        "Schatten", "Klingen", "Sucher", "Zeichen", "Stimmen",
+    };
+    char const* kDeTail[] = {
+        "des Phönix", "des Lichts", "der Nacht", "der Finsternis",
+        "des Sturms", "der Asche", "der Flamme", "der Krone",
+        "des Nordens", "der Ewigkeit", "des Zwielichts", "der Stille",
+    };
+
+    char const* kEnAdj[] = {
+        "Eternal", "Silent", "Last", "Iron", "Crimson", "Golden", "Frozen",
+        "Wild", "Distant", "Grey", "Second", "Fallen", "Ashen", "Hollow",
+        "Pale", "Sworn",
+    };
+    char const* kEnNoun[] = {
+        "Legion", "Blades", "Watch", "Company", "Order", "Vanguard",
+        "Wolves", "Crown", "Ashes", "Path", "Circle", "Banner",
+    };
+    char const* kEnHead[] = {
+        "Touch", "Sons", "Heirs", "Children", "Keepers", "Shadows",
+        "Blades", "Wings", "Echoes", "Signs",
+    };
+    char const* kEnTail[] = {
+        "of Destiny", "of Ash", "of the North", "of Dawn", "of Silence",
+        "of the Storm", "of Winter", "of Embers", "of the Vale",
+        "of Sorrow",
+    };
+
+    char const* kSolo[] = {
+        "Zeitlos", "Sternenwind", "Nemesis", "Aurora", "Vigil", "Requiem",
+        "Zenit", "Eclipse", "Nachtwind", "Morgenrot", "Ascension",
+        "Solstice", "Dämmerwache", "Abendrot", "Vermächtnis", "Sanctum",
+    };
+
+    char const* kFun[] = {
+        "AFK Bier holen", "Nur kurz Pause", "Rentnergang", "Pyjamahelden",
+        "Kaffee zuerst", "Schnitzelkrieger", "Sofasoldaten",
+        "Wipe Akademie", "Heiler vergessen", "Zu zweit allein",
+        "Kekse für alle", "Randgruppe", "Gleich Feierabend", "Ohne Plan",
+        "Wir üben noch", "Montags nie",
+    };
+
+    template<size_t N>
+    char const* PickOne(char const* const (&a)[N])
+    {
+        return a[RollBetween(0, uint32(N) - 1)];
+    }
+
+    template<typename T, size_t N>
+    T const& PickRow(T const (&a)[N])
+    {
+        return a[RollBetween(0, uint32(N) - 1)];
+    }
+
+    // Das Spiel zaehlt Zeichen, nicht Bytes - ein Umlaut ist in UTF-8
+    // zwei Bytes lang. Ohne das hier waeren Namen mit Umlauten
+    // faelschlich zu lang.
+    size_t NameLength(std::string const& s)
+    {
+        size_t n = 0;
+        for (unsigned char c : s)
+            if ((c & 0xC0) != 0x80)
+                ++n;
+        return n;
+    }
+
+    std::string ComposeGuildName(std::string const& archetype)
+    {
+        uint32 roll = RollBetween(1, 100);
+
+        if (roll <= _cfg.nameHumorPercent)
+            return PickOne(kFun);
+
+        if (roll <= _cfg.nameHumorPercent + _cfg.nameEnglishPercent)
+            return RollBetween(0, 1)
+                 ? std::string(PickOne(kEnAdj)) + " " + PickOne(kEnNoun)
+                 : std::string(PickOne(kEnHead)) + " " + PickOne(kEnTail);
+
+        switch (RollBetween(0, 2))
+        {
+            case 0:
+            {
+                DeNoun n = (archetype == "raider"
+                            || archetype == "dungeoneer") ? PickRow(kDeRaid)
+                         : archetype == "pvper"           ? PickRow(kDePvp)
+                         : (archetype == "gatherer"
+                            || archetype == "collector")  ? PickRow(kDeGath)
+                         : (archetype == "explorer"
+                            || archetype == "questor")    ? PickRow(kDeExpl)
+                                                          : PickRow(kDeAny);
+
+                return std::string("Die ") + PickOne(kDeAdj)
+                     + (n.plural ? "en " : "e ") + n.word;
+            }
+            case 1:
+                return std::string(PickOne(kDeHead)) + " "
+                     + PickOne(kDeTail);
+            default:
+                return PickOne(kSolo);
+        }
+    }
+
+    std::string MakeGuildName(std::string const& archetype)
+    {
+        // Zwanzig Versuche. Ueber siebenhundert verschiedene Namen sind
+        // moeglich; wer keinen freien findet, gruendet in der naechsten
+        // Runde.
+        for (uint32 tries = 0; tries < 20; ++tries)
+        {
+            std::string name = ComposeGuildName(archetype);
+
+            size_t len = NameLength(name);
+            if (len < 2 || len > 24)
+                continue;
+
+            if (!sGuildMgr->GetGuildByName(name))
+                return name;
+        }
+        return std::string();
+    }
+
+    uint32 CountBotGuilds()
+    {
+        QueryResult res = CharacterDatabase.Query(
+            "SELECT COUNT(*) FROM bot_social_guild");
+        return res ? uint32(res->Fetch()[0].Get<uint64>()) : 0u;
+    }
+
+    void FoundTick()
+    {
+        if (!_cfg.foundEnable || !_cfg.enable)
+            return;
+
+        time_t now = time(nullptr);
+        if (_lastFound
+            && uint32(now - _lastFound) < _cfg.foundServerCooldown)
+            return;
+
+        if (_cfg.foundMaxGuilds && CountBotGuilds() >= _cfg.foundMaxGuilds)
+            return;
+
+        int32 const minBond = _cfg.foundMinBond ? _cfg.foundMinBond
+                                                : _cfg.friendsThreshold;
+
+        // Wer koennte gruenden, und wer waere gerade greifbar?
+        std::vector<uint32> free[2];   // je Fraktion
+        std::vector<uint32> founders[2];
+
+        {
+            std::shared_lock<std::shared_mutex> lock(
+                *HashMapHolder<Player>::GetLock());
+
+            for (auto const& pair : ObjectAccessor::GetPlayers())
+            {
+                Player* p = pair.second;
+                if (!p || !p->IsInWorld() || !IsBot(p) || p->GetGuildId())
+                    continue;
+                if (p->GetLevel() < _cfg.foundMinLevel)
+                    continue;
+
+                uint32 low  = p->GetGUID().GetCounter();
+                uint32 side = p->GetTeamId() == TEAM_ALLIANCE ? 0u : 1u;
+
+                free[side].push_back(low);
+
+                if (SociabilityOf(low) < int32(_cfg.foundMinSociability))
+                    continue;
+                if (ReputationOf(low) < _cfg.recruitMinReputation)
+                    continue;
+
+                founders[side].push_back(low);
+            }
+        }
+
+        uint32 bestFounder = 0;
+        std::vector<uint32> bestCircle;
+
+        for (uint32 side = 0; side < 2; ++side)
+        {
+            for (uint32 f : founders[side])
+            {
+                if (EnsureProfile(f).ambition < _cfg.foundMinAmbition)
+                    continue;
+
+                // Nur wer IHN auch mag. Einseitige Zuneigung gruendet
+                // keine Gilde - das waere ein Fanclub, kein Verein.
+                std::vector<uint32> circle;
+                for (uint32 o : free[side])
+                {
+                    if (o == f)
+                        continue;
+                    if (AffinityOf(f, o) < minBond)
+                        continue;
+                    if (AffinityOf(o, f) < minBond)
+                        continue;
+                    circle.push_back(o);
+                }
+
+                if (circle.size() < _cfg.foundMinFriends)
+                    continue;
+
+                // Und die Runde muss sich untereinander vertragen. Zwei
+                // Leute, die einander meiden, gruenden nichts zusammen.
+                bool feud = false;
+                for (size_t i = 0; i < circle.size() && !feud; ++i)
+                    for (size_t j = i + 1; j < circle.size(); ++j)
+                        if (AffinityOf(circle[i], circle[j])
+                                <= _cfg.avoidThreshold
+                            || AffinityOf(circle[j], circle[i])
+                                <= _cfg.avoidThreshold)
+                        {
+                            feud = true;
+                            break;
+                        }
+
+                if (feud)
+                    continue;
+
+                if (circle.size() > bestCircle.size())
+                {
+                    bestCircle = circle;
+                    bestFounder = f;
+                }
+            }
+        }
+
+        // Ohne das hier ist "es passiert nichts" nicht von "es geht nicht"
+        // zu unterscheiden - und genau daran haben wir diese Woche schon
+        // zweimal Zeit verloren.
+        if (_cfg.debug)
+            LOG_INFO("module",
+                     "BotSocial/Gruendung: {} gildenlose Bots online, "
+                     "{} davon kaemen als Gruender in Frage, "
+                     "beste Runde {} Bekannte (noetig {}), Schwelle {}.",
+                     free[0].size() + free[1].size(),
+                     founders[0].size() + founders[1].size(),
+                     bestCircle.size(), _cfg.foundMinFriends, minBond);
+
+        if (!bestFounder)
+            return;
+
+        Player* leader = ObjectAccessor::FindPlayer(MakeGuid(bestFounder));
+        if (!leader || !leader->IsInWorld() || leader->GetGuildId())
+            return;
+
+        std::string name = MakeGuildName(ArchetypeOf(bestFounder));
+        if (name.empty())
+            return;
+
+        Guild* guild = new Guild();
+        if (!guild->Create(leader, name))
+        {
+            delete guild;
+            return;
+        }
+        sGuildMgr->AddGuild(guild);
+
+        uint32 joined = 0;
+        for (uint32 m : bestCircle)
+        {
+            Player* mp = ObjectAccessor::FindPlayer(MakeGuid(m));
+            if (!mp || !mp->IsInWorld() || mp->GetGuildId())
+                continue;
+            if (guild->AddMember(mp->GetGUID()))
+                ++joined;
+        }
+
+        _lastFound = now;
+
+        // Sofort aufnehmen, sonst wirbt bis zur naechsten Werberunde
+        // niemand fuer die frische Gilde.
+        RegisterBotGuilds();
+
+        LogEvent(bestFounder, 0, "guild_founded", name, int32(joined));
+
+        LOG_INFO("module",
+                 "BotSocial: {} gruendete '{}' mit {} Bekannten",
+                 leader->GetName(), name, joined);
+    }
+
+    // Bot-gefuehrte Gilden in bot_social_guild aufnehmen und ihnen eine
+    // Zielgroesse geben.
+    //
+    // Lief bisher nur beim Serverstart. Gilden, die mod-playerbots im
+    // laufenden Betrieb gruendet, blieben damit unbekannt und wurden nie
+    // beworben - bis zum naechsten Neustart. Deshalb jetzt auch in jeder
+    // Werberunde; die Tabelle ist klein und INSERT IGNORE billig.
+    void RegisterBotGuilds()
+    {
+        CharacterDatabase.Execute(
+            "INSERT IGNORE INTO bot_social_guild (guild_id, target_size) "
+            "SELECT g.guildid, {} FROM guild g "
+            "JOIN characters c ON c.guid = g.leaderguid "
+            "JOIN {}.account a ON a.id = c.account "
+            "WHERE a.username LIKE '{}%'",
+            _cfg.guildTargetMin, _cfg.authDatabase, _cfg.botAccountPrefix);
+
+        // Frisch aufgenommene Zeilen tragen die Mindestgroesse als Marke
+        // und bekommen hier ihre eigene Zielgroesse.
+        QueryResult res = CharacterDatabase.Query(
+            "SELECT guild_id FROM bot_social_guild WHERE target_size = {}",
+            _cfg.guildTargetMin);
+
+        if (!res)
+            return;
+
+        do
+        {
+            CharacterDatabase.Execute(
+                "UPDATE bot_social_guild SET target_size = {} "
+                "WHERE guild_id = {}",
+                RollBetween(_cfg.guildTargetMin, _cfg.guildTargetMax),
+                res->Fetch()[0].Get<uint32>());
+        } while (res->NextRow());
+    }
+
+    uint32 PickRecruit(Guild* guild, TeamId team,
+                       uint32 gHour = 0, uint32 gSpan = 0)
     {
         std::vector<uint32> members = GuildMemberGuids(guild->GetId());
         if (members.empty())
@@ -1017,16 +1949,17 @@ namespace
 
         std::vector<uint32> candidates;
 
-        WorldSessionMgr::SessionMap const& sessions =
-            sWorldSessionMgr->GetAllSessions();
-
-        for (auto const& pair : sessions)
+        // WICHTIG: nicht ueber die Sitzungsliste laufen. mod-playerbots
+        // meldet seine Bot-Sitzungen nie beim WorldSessionMgr an - dort
+        // stehen nur echte Spieler. Die Spielerliste des Kerns enthaelt
+        // dagegen jeden Player in der Welt, Bots eingeschlossen.
         {
-            WorldSession* session = pair.second;
-            if (!session)
-                continue;
+        std::shared_lock<std::shared_mutex> lock(
+            *HashMapHolder<Player>::GetLock());
 
-            Player* p = session->GetPlayer();
+        for (auto const& pair : ObjectAccessor::GetPlayers())
+        {
+            Player* p = pair.second;
             if (!p || !p->IsInWorld() || !IsBot(p))
                 continue;
             if (p->GetGuildId() || p->GetTeamId() != team)
@@ -1034,8 +1967,11 @@ namespace
 
             uint32 low = p->GetGUID().GetCounter();
 
-            // Loners stay out. Some people simply do not join things.
-            if (ArchetypeOf(low) == "loner")
+            // Manche treten schlicht nichts bei. Frueher stand hier der
+            // Archetyp 'loner' - den gibt es seit dem Schichten-Umbau
+            // nicht mehr, der Filter lief seither ins Leere. Es war nie
+            // eine Taetigkeit, sondern ein Wesenszug.
+            if (SociabilityOf(low) <= int32(_cfg.recruitMinSociability))
                 continue;
 
             // A bad name travels ahead of you.
@@ -1044,6 +1980,7 @@ namespace
 
             candidates.push_back(low);
         }
+        }   // Sperre wieder frei - ab hier wird gerechnet und gehandelt
 
         if (candidates.empty())
             return 0;
@@ -1067,6 +2004,19 @@ namespace
             // Somebody in there cannot stand this candidate.
             if (worstFeeling <= _cfg.avoidThreshold)
                 continue;
+
+            // Wer zur selben Zeit spielt, wird eher genommen. Nicht weil
+            // er beliebter waere, sondern weil man ihn ueberhaupt trifft.
+            if (_cfg.guildWindowEnable && gSpan)
+            {
+                std::lock_guard<std::recursive_mutex> guard(_graphMutex);
+                auto it = _profiles.find(c);
+                if (it != _profiles.end())
+                    score += int32(WindowOverlap(gHour, gSpan,
+                                                 it->second.primeHour,
+                                                 it->second.primeSpan))
+                           * _cfg.recruitWindowBonus;
+            }
 
             if (score > bestScore)
             {
@@ -1106,6 +2056,10 @@ namespace
         if (!_cfg.recruitEnable)
             return;
 
+        // Neu gegruendete Gilden zuerst aufnehmen - sonst wirbt niemand
+        // fuer sie, bis der Server das naechste Mal neu startet.
+        RegisterBotGuilds();
+
         QueryResult res = CharacterDatabase.Query(
             "SELECT guild_id, target_size FROM bot_social_guild "
             "WHERE last_recruit IS NULL "
@@ -1139,7 +2093,20 @@ namespace
             if (!leader || !leader->IsInWorld())
                 continue;
 
-            uint32 recruit = PickRecruit(guild, leader->GetTeamId());
+            // Das Zeitfenster der Gilde aus ihren Mitgliedern ableiten
+            // und mitschreiben - das Dashboard und die Spaltung lesen es.
+            uint32 gHour = 0, gSpan = 0;
+            if (_cfg.guildWindowEnable)
+            {
+                GuildWindow(GuildMemberGuids(guildId), gHour, gSpan);
+                CharacterDatabase.Execute(
+                    "UPDATE bot_social_guild SET prime_hour = {}, "
+                    "prime_span = {} WHERE guild_id = {}",
+                    gHour, gSpan, guildId);
+            }
+
+            uint32 recruit = PickRecruit(guild, leader->GetTeamId(),
+                                         gHour, gSpan);
             if (!recruit)
                 continue;
 
@@ -1178,17 +2145,30 @@ namespace
         if (!_cfg.ranksEnable)
             return;
 
-        WorldSessionMgr::SessionMap const& sessions =
-            sWorldSessionMgr->GetAllSessions();
-
-        for (auto const& pair : sessions)
+        // Erst einsammeln, wer ueberhaupt in Frage kommt - die
+        // Rangaenderung selbst passiert danach ohne gehaltene Sperre.
+        // (Bots stehen nicht im WorldSessionMgr, siehe Anwerbung.)
+        std::vector<ObjectGuid> promotable;
         {
-            WorldSession* session = pair.second;
-            if (!session)
-                continue;
+            std::shared_lock<std::shared_mutex> lock(
+                *HashMapHolder<Player>::GetLock());
 
-            Player* p = session->GetPlayer();
-            if (!p || !p->IsInWorld() || !IsBot(p))
+            for (auto const& pair : ObjectAccessor::GetPlayers())
+            {
+                Player* p = pair.second;
+                if (!p || !p->IsInWorld() || !IsBot(p))
+                    continue;
+                if (!p->GetGuildId())
+                    continue;
+
+                promotable.push_back(p->GetGUID());
+            }
+        }
+
+        for (ObjectGuid const& guid : promotable)
+        {
+            Player* p = ObjectAccessor::FindPlayer(guid);
+            if (!p || !p->IsInWorld())
                 continue;
 
             uint32 guildId = p->GetGuildId();
@@ -1266,6 +2246,14 @@ namespace
             uint32 masterLow = guild->GetLeaderGUID().GetCounter();
             std::vector<uint32> members = GuildMemberGuids(guildId);
 
+            // Williams 2006: der haeufigste Austrittsgrund ist nicht
+            // Streit, sondern dass die eigenen Ziele nicht mehr zu denen
+            // der Gilde passen. Das Zeitfenster ist der Teil davon, den
+            // wir messen koennen.
+            uint32 gHour = 0, gSpan = 0;
+            if (_cfg.guildWindowEnable)
+                GuildWindow(members, gHour, gSpan);
+
             // Find the most plausible ringleader: dislikes the guild
             // master, is well connected inside the guild, and is
             // ambitious enough to want their own tabard.
@@ -1287,6 +2275,15 @@ namespace
                 for (uint32 o : members)
                     if (o != m && o != masterLow)
                         clique += std::max(0, AffinityOf(m, o));
+
+                // Wer zu ganz anderen Zeiten spielt als seine Gilde,
+                // braucht weniger Rueckhalt, um zu gehen - er hat ohnehin
+                // wenig von ihr.
+                if (_cfg.guildWindowEnable && gSpan
+                    && WindowOverlap(gHour, gSpan, prof.primeHour,
+                                     prof.primeSpan)
+                       <= _cfg.schismWindowGapMax)
+                    clique += _cfg.schismTimeBonus;
 
                 if (clique > bestClique)
                 {
@@ -1470,6 +2467,71 @@ void LoadConfig()
     _cfg.sociabilityAffinityDivisor   = sConfigMgr->GetOption<int32>("BotSocial.Sociability.AffinityDivisor", 4);
     _cfg.sociabilityMoodHours         = sConfigMgr->GetOption<uint32>("BotSocial.Sociability.MoodHours", 6);
     _cfg.sociabilityFloor             = sConfigMgr->GetOption<int32>("BotSocial.Sociability.Floor", 5);
+
+    // ---- Schichten (Fassung 2) ----
+    _cfg.layersEnable        = sConfigMgr->GetOption<bool>("BotSocial.Layers.Enable", true);
+    _cfg.traitMean           = sConfigMgr->GetOption<int32>("BotSocial.Traits.Mean", 50);
+    _cfg.traitSpread         = sConfigMgr->GetOption<int32>("BotSocial.Traits.Spread", 18);
+    _cfg.sadismTailPercent   = sConfigMgr->GetOption<uint32>("BotSocial.Sadism.TailPercent", 5);
+    _cfg.sadismQuietMax      = sConfigMgr->GetOption<uint32>("BotSocial.Sadism.QuietMax", 15);
+    _cfg.sadismTailLo        = sConfigMgr->GetOption<uint32>("BotSocial.Sadism.TailFloor", 40);
+    _cfg.timeWeightEvening   = sConfigMgr->GetOption<uint32>("BotSocial.Time.WeightEvening", 40);
+    _cfg.timeWeightAlongside = sConfigMgr->GetOption<uint32>("BotSocial.Time.WeightAlongside", 35);
+    _cfg.timeWeightHeavy     = sConfigMgr->GetOption<uint32>("BotSocial.Time.WeightHeavy", 13);
+    _cfg.timeWeightNight     = sConfigMgr->GetOption<uint32>("BotSocial.Time.WeightNight", 12);
+    _cfg.playMinutesMean     = sConfigMgr->GetOption<uint32>("BotSocial.Time.MinutesMean", 1360);
+    _cfg.playMinutesSpread   = sConfigMgr->GetOption<uint32>("BotSocial.Time.MinutesSpread", 846);
+    _cfg.playMinutesMin      = sConfigMgr->GetOption<uint32>("BotSocial.Time.MinutesMin", 180);
+    _cfg.playMinutesMax      = sConfigMgr->GetOption<uint32>("BotSocial.Time.MinutesMax", 4200);
+    _cfg.instanceMinBlock     = sConfigMgr->GetOption<uint32>("BotSocial.Time.InstanceMinBlock", 40);
+    _cfg.instanceMaxInterrupt = sConfigMgr->GetOption<uint32>("BotSocial.Time.InstanceMaxInterrupt", 80);
+    _cfg.anchorMinDungeons   = sConfigMgr->GetOption<uint32>("BotSocial.Anchor.MinDungeons", 4);
+    _cfg.anchorMinMinutes    = sConfigMgr->GetOption<uint32>("BotSocial.Anchor.MinMinutes", 240);
+    _cfg.flushMaxStatements  = sConfigMgr->GetOption<uint32>("BotSocial.FlushMaxStatements", 2000);
+    _cfg.traitsAffect        = sConfigMgr->GetOption<bool>("BotSocial.Traits.Affect", true);
+    _cfg.traitGrudgeSwing    = sConfigMgr->GetOption<int32>("BotSocial.Traits.GrudgeSwing", 80);
+    _cfg.traitAvoidSwing     = sConfigMgr->GetOption<int32>("BotSocial.Traits.AvoidSwing", 40);
+    _cfg.traitForgiveFrom    = sConfigMgr->GetOption<uint32>("BotSocial.Traits.ForgiveFrom", 70);
+    _cfg.traitGrudgeHoldBelow = sConfigMgr->GetOption<uint32>("BotSocial.Traits.GrudgeHoldBelow", 30);
+    _cfg.anchorEnable        = sConfigMgr->GetOption<bool>("BotSocial.Anchor.Enable", true);
+    _cfg.anchorBreakAt       = sConfigMgr->GetOption<int32>("BotSocial.Anchor.BreakAt", 40);
+    _cfg.bailReasonEnable    = sConfigMgr->GetOption<bool>("BotSocial.Bail.ReasonEnable", true);
+    _cfg.bailExcuseFrom      = sConfigMgr->GetOption<uint32>("BotSocial.Bail.ExcuseFrom", 70);
+    _cfg.bailExcusePercent   = sConfigMgr->GetOption<int32>("BotSocial.Bail.ExcusePercent", 40);
+    _cfg.bailAggravateBelow  = sConfigMgr->GetOption<uint32>("BotSocial.Bail.AggravateBelow", 30);
+    _cfg.bailAggravatePercent = sConfigMgr->GetOption<int32>("BotSocial.Bail.AggravatePercent", 150);
+    _cfg.foundEnable         = sConfigMgr->GetOption<bool>("BotSocial.Found.Enable", true);
+    _cfg.foundInterval       = sConfigMgr->GetOption<uint32>("BotSocial.Found.Interval", 900);
+    _cfg.foundServerCooldown = sConfigMgr->GetOption<uint32>("BotSocial.Found.ServerCooldown", 3600);
+    _cfg.foundMaxGuilds      = sConfigMgr->GetOption<uint32>("BotSocial.Found.MaxGuilds", 60);
+    _cfg.foundMinFriends     = sConfigMgr->GetOption<uint32>("BotSocial.Found.MinFriends", 4);
+    _cfg.foundMinBond        = sConfigMgr->GetOption<int32>("BotSocial.Found.MinBond", 80);
+    _cfg.foundMinAmbition    = sConfigMgr->GetOption<uint32>("BotSocial.Found.MinAmbition", 60);
+    _cfg.foundMinSociability = sConfigMgr->GetOption<uint32>("BotSocial.Found.MinSociability", 45);
+    _cfg.foundMinLevel       = sConfigMgr->GetOption<uint32>("BotSocial.Found.MinLevel", 10);
+    _cfg.nameEnglishPercent  = sConfigMgr->GetOption<uint32>("BotSocial.Found.NameEnglishPercent", 40);
+    _cfg.nameHumorPercent    = sConfigMgr->GetOption<uint32>("BotSocial.Found.NameHumorPercent", 15);
+    if (_cfg.nameEnglishPercent + _cfg.nameHumorPercent > 100)
+    {
+        LOG_WARN("module", "BotSocial: NameEnglishPercent + NameHumorPercent "
+                 "ueber 100 - deutsche Namen kaemen nie vor. Auf 40/15 gesetzt.");
+        _cfg.nameEnglishPercent = 40;
+        _cfg.nameHumorPercent   = 15;
+    }
+    _cfg.guildWindowEnable   = sConfigMgr->GetOption<bool>("BotSocial.GuildWindow.Enable", true);
+    _cfg.recruitWindowBonus  = sConfigMgr->GetOption<int32>("BotSocial.Recruit.WindowBonus", 8);
+    _cfg.recruitMinSociability = sConfigMgr->GetOption<uint32>("BotSocial.Recruit.MinSociability", 20);
+    _cfg.schismWindowGapMax  = sConfigMgr->GetOption<uint32>("BotSocial.Schism.WindowGapMax", 1);
+    _cfg.schismTimeBonus     = sConfigMgr->GetOption<int32>("BotSocial.Schism.TimeBonus", 40);
+
+    // Ein Wert von 0 bei der Streuung macht aus jedem Bot denselben
+    // Menschen. Das ist fast nie gewollt, also unten kappen.
+    if (_cfg.traitSpread < 1)
+        _cfg.traitSpread = 1;
+    if (_cfg.sadismQuietMax > 100)
+        _cfg.sadismQuietMax = 100;
+    if (_cfg.playMinutesMin > _cfg.playMinutesMax)
+        _cfg.playMinutesMin = _cfg.playMinutesMax;
 
     _cfg.gossipEnable       = sConfigMgr->GetOption<bool>("BotSocial.Gossip.Enable", false);
     _cfg.gossipMinSeverity  = sConfigMgr->GetOption<int32>("BotSocial.Gossip.MinSeverity", 25);
@@ -1666,8 +2728,36 @@ void OnGroupMemberRemoved(Group* group, ObjectGuid guid,
     if (leaverPlayer && leaverPlayer->GetMap()
         && leaverPlayer->GetMap()->IsDungeon())
     {
-        GroupGrudge(group, leaver, _cfg.lossBailed, "bailed",
-                    "Instanz verlassen");
+        int32       amount = _cfg.lossBailed;
+        std::string kind   = "bailed";
+        std::string detail = "Instanz verlassen";
+
+        // Der Unterschied, den das Modell bisher nicht treffen konnte:
+        // der nette Unzuverlaessige gegen das zuverlaessige Ekel. Beide
+        // gehen mitten im Dungeon, beide sammeln Groll - nur der Grund
+        // unterscheidet sie, und Gruppen bewerten ihn verschieden.
+        if (_cfg.bailReasonEnable)
+        {
+            uint32 intr = InterruptibilityOf(leaver);
+            uint32 con  = ConscientiousnessOf(leaver);
+
+            if (intr >= _cfg.bailExcuseFrom)
+            {
+                amount = amount * _cfg.bailExcusePercent / 100;
+                kind   = "bailed_life";
+                detail = "Instanz verlassen (musste weg)";
+            }
+            else if (con <= _cfg.bailAggravateBelow)
+            {
+                amount = amount * _cfg.bailAggravatePercent / 100;
+                detail = "Instanz verlassen (einfach gegangen)";
+            }
+
+            if (amount < 1)
+                amount = 1;   // ganz folgenlos bleibt es nie
+        }
+
+        GroupGrudge(group, leaver, amount, kind, detail);
     }
 }
 
@@ -1922,6 +3012,18 @@ bool WouldRefuseGroup(Player* player, Group* group)
 
     if (_cfg.avoidEnable)
     {
+        // Ein unvertraeglicher Bot lehnt frueher ab, ein sanfter haelt
+        // laenger aus. Die Schwelle ist negativ; ein Aufschlag macht sie
+        // strenger. Haengt nur am Bot selbst, also einmal vor der Schleife.
+        int32 threshold = _cfg.avoidThreshold;
+        if (_cfg.traitsAffect)
+        {
+            threshold += (50 - AgreeablenessOf(me))
+                       * _cfg.traitAvoidSwing / 100;
+            if (threshold > -1)
+                threshold = -1;
+        }
+
         for (uint32 other : members)
         {
             if (other == me)
@@ -1931,7 +3033,7 @@ bool WouldRefuseGroup(Player* player, Group* group)
             if (IsHuman(other) && !_cfg.playerCanBeIgnored)
                 continue;
 
-            if (AffinityOf(me, other) <= _cfg.avoidThreshold)
+            if (AffinityOf(me, other) <= threshold)
                 return true;
         }
     }
@@ -2015,29 +3117,7 @@ void Startup()
             "WHERE created_at < NOW() - INTERVAL {} DAY",
             _cfg.traceRetentionDays);
 
-    CharacterDatabase.Execute(
-        "INSERT IGNORE INTO bot_social_guild (guild_id, target_size) "
-        "SELECT g.guildid, {} FROM guild g "
-        "JOIN characters c ON c.guid = g.leaderguid "
-        "JOIN {}.account a ON a.id = c.account "
-        "WHERE a.username LIKE '{}%'",
-        _cfg.guildTargetMin, _cfg.authDatabase, _cfg.botAccountPrefix);
-
-    QueryResult res = CharacterDatabase.Query(
-        "SELECT guild_id FROM bot_social_guild WHERE target_size = {}",
-        _cfg.guildTargetMin);
-
-    if (res)
-    {
-        do
-        {
-            CharacterDatabase.Execute(
-                "UPDATE bot_social_guild SET target_size = {} "
-                "WHERE guild_id = {}",
-                RollBetween(_cfg.guildTargetMin, _cfg.guildTargetMax),
-                res->Fetch()[0].Get<uint32>());
-        } while (res->NextRow());
-    }
+    RegisterBotGuilds();
 
     // Rows seeded before the cap existed (or before it was lowered) still carry oversized targets.
     // RecruitTick reads target_size per row, not the config, so those guilds would keep recruiting
@@ -2046,6 +3126,35 @@ void Startup()
         CharacterDatabase.Execute(
             "UPDATE bot_social_guild SET target_size = {} WHERE target_size > {}",
             _cfg.guildTargetMax, _cfg.guildTargetMax);
+
+    // Wir schreiben NICHT in playerbots.conf - das ist die Konfiguration
+    // eines fremden Moduls, und etwas, das ungefragt fremde Einstellungen
+    // aendert, ist die Sorte Ueberraschung, die man erst Wochen spaeter
+    // findet. Stattdessen sagen wir laut Bescheid, wenn sie dem hier
+    // widerspricht.
+    if (_cfg.foundEnable)
+    {
+        uint32 pbGuilds =
+            sConfigMgr->GetOption<uint32>("AiPlayerbot.RandomBotGuildCount", 0);
+
+        if (pbGuilds)
+            LOG_ERROR("module",
+                      "mod-bot-social: AiPlayerbot.RandomBotGuildCount = {}. "
+                      "mod-playerbots legt damit beim Serverstart {} Gilden "
+                      "an und steckt beliebige Bots hinein - auch auf Stufe 1, "
+                      "ohne dass die sich je begegnet waeren. Genau das soll "
+                      "BotSocial.Found ersetzen. Setze den Wert in "
+                      "playerbots.conf auf 0, oder schalte BotSocial.Found."
+                      "Enable aus - beides zusammen ergibt keinen Sinn.",
+                      pbGuilds, pbGuilds);
+        else
+            LOG_INFO("module",
+                     "mod-bot-social: Gilden entstehen aus Cliquen - "
+                     "hoechstens {} GILDEN auf dem Server, je hoechstens {} "
+                     "Mitglieder, fruehestens alle {} Minuten eine neue.",
+                     _cfg.foundMaxGuilds, _cfg.guildTargetMax,
+                     _cfg.foundServerCooldown / 60);
+    }
 
     LOG_INFO("module",
              "mod-bot-social aktiv: Streit={} Freunde={} Werbung={} "
@@ -2084,6 +3193,13 @@ void Update(uint32 diff)
     {
         _rankTimer = 0;
         RankTick();
+    }
+
+    _foundTimer += diff;
+    if (_foundTimer >= _cfg.foundInterval * IN_MILLISECONDS)
+    {
+        _foundTimer = 0;
+        FoundTick();
     }
 
     _schismTimer += diff;
@@ -2208,6 +3324,28 @@ ProfileRow GetProfile(uint32 botGuid)
     row.skillTier   = it->second.skillTier;
     row.sociability = it->second.sociability;
     row.ambition    = it->second.ambition;
+    row.agreeableness     = it->second.agreeableness;
+    row.honesty           = it->second.honesty;
+    row.conscientiousness = it->second.conscientiousness;
+    row.sadism            = it->second.sadism;
+    row.gearMotive        = it->second.gearMotive;
+    row.playMinutesWeek   = it->second.playMinutesWeek;
+    row.primeHour         = it->second.primeHour;
+    row.primeSpan         = it->second.primeSpan;
+    row.blockMinutes      = it->second.blockMinutes;
+    row.commitReliability = it->second.commitReliability;
+    row.interruptibility  = it->second.interruptibility;
+    row.stage             = it->second.stage;
+    row.anchorGuid        = it->second.anchorGuid;
+
+    // Eine einzelne Abfrage nur, wenn es einen Anker gibt. Ohne Anker
+    // (der Normalfall) kostet .social who keine zusaetzliche Runde.
+    if (row.anchorGuid)
+    {
+        QueryResult nres = CharacterDatabase.Query(
+            "SELECT name FROM characters WHERE guid = {}", row.anchorGuid);
+        row.anchorName = nres ? (*nres)[0].Get<std::string>() : std::string("?");
+    }
     row.reputation  = it->second.reputation;
     row.found       = true;
     return row;

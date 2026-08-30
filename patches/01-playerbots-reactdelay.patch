@@ -1,5 +1,7 @@
---- a/src/Bot/PlayerbotAI.cpp	2026-08-28 18:59:39.611171156 +0000
-+++ b/src/Bot/PlayerbotAI.cpp	2026-08-28 18:59:39.611619728 +0000
+diff --git a/src/Bot/PlayerbotAI.cpp b/src/Bot/PlayerbotAI.cpp
+index da952e2c..dcb04575 100644
+--- a/src/Bot/PlayerbotAI.cpp
++++ b/src/Bot/PlayerbotAI.cpp
 @@ -11,8 +11,10 @@
  #include "ChatHelper.h"
  #include "CheckMountStateAction.h"
@@ -23,7 +25,7 @@
  
  namespace
  {
-@@ -6608,10 +6612,119 @@
+@@ -6608,10 +6612,119 @@ std::set<uint32> PlayerbotAI::GetCurrentIncompleteQuestIds()
      return result;
  }
  

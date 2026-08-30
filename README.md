@@ -22,15 +22,87 @@ The model deliberately mirrors a few things people actually do:
 - **Nobody keeps track of eight hundred people.** A Dunbar cap trims the
   weakest bonds — and keeps the table from growing quadratically.
 - **People who want to play differently rub each other the wrong way.**
-  Every bot gets an archetype (questor, dungeoneer, raider, pvper,
-  gatherer, casual, loner); clashing pairs take a small penalty per shared
-  group.
+  Every bot gets an activity (questor, dungeoneer, raider, pvper,
+  gatherer, explorer, collector); clashing pairs take a small penalty per
+  shared group.
 
 The graph lives in memory; the database is the backup.
 
 **The module does not link against mod-playerbots.** It only observes core
 script hooks and recognises bots through `WorldSession::IsBot()`. An update
 to mod-playerbots therefore cannot break it.
+
+## The six layers (2.0)
+
+Up to 1.x a bot was one number: an archetype, and everything else followed
+from it. A `casual` was automatically less sociable, a `raider` more
+ambitious. That is the one thing the literature does not support — what
+somebody plays says very little about what they are like. Two of the seven
+archetypes, `casual` and `loner`, were not activities at all; they were a
+schedule and a temperament wearing an activity's clothes.
+
+2.0 pulls them apart. A bot is now six independent layers:
+
+| Layer | What it is | Where it comes from |
+|---|---|---|
+| 1 — Activity | questor, dungeoneer, raider, pvper, gatherer, explorer, collector | weighted roll |
+| 2 — Character | agreeableness, honesty, conscientiousness, sociability, ambition, sadism | rolled, independent of layer 1 |
+| 3 — Gear motive | means, number, display, ticket, duty | **derived**, never rolled |
+| 4 — Availability | prime hour, span, block length, reliability, interruptibility | rolled **jointly** |
+| 5 — Career stage | entry, practice, mastery, burnout, recovery | event-driven |
+| 6 — Anchor | the one person someone keeps logging in for | earned, never rolled |
+
+Three of these deserve a note, because each hides a trap.
+
+**Layer 2 is not one bell curve.** Four traits are normal around 50.
+Sadism is not: Volkmer et al. (2023, preregistered, N = 1026) show by
+quantile regression that sadism explains only the *upper* quantiles of
+trolling — for low values it says nothing. So the mass sits near zero and a
+thin tail runs high. The first implementation drew from two separate pots
+and left nothing at all between 16 and 39; in a live population of 3518
+profiles that band was empty, which makes the value binary in disguise.
+The upper pot now has a gradient and starts directly above `QuietMax`, with
+its exponent chosen so the share above `TailFloor` stays exactly
+`TailPercent`. Measured: 90.6 % quiet, 4.7 % between, 4.6 % from 40 up.
+
+**Layer 4 is drawn jointly, not per column.** Roll the five parts
+separately and you get impossible people — three hours at a stretch and yet
+away every ten minutes. One roll picks a profile, the profile supplies all
+five:
+
+| Profile | Window starts | Block | Reliability | Interruptible |
+|---|---|---|---|---|
+| Evening | 19–22 | 120–240 min | high | rarely |
+| Alongside | 8–21 | 20–75 min | low | constantly |
+| Heavy | 12–18 | 76–200 min | middling | sometimes |
+| Night | 22, 23, 0, 1, 2 | 76–210 min | high | rarely |
+
+The night profile crosses midnight, and the overlap arithmetic handles it —
+windows are compared modulo 24. Without it the server evening ended at
+22:00 and not a single window began between 23:00 and 07:00, which for a
+game whose real peak runs past midnight was the coarsest gap in the layer.
+
+**Layer 3 is derived, never rolled.** Rolling it produces combinations that
+do not exist — a questor whose gear is an *entry ticket to raiding*. It
+follows from activity, career stage and guild membership, and is recomputed
+at every stage change.
+
+## Guilds grow from cliques
+
+mod-playerbots creates guilds at server start and puts arbitrary bots in
+them — level 1 characters that never met. This module replaces that.
+
+A bot founds a guild only when all of this holds at once: enough **mutual**
+bonds above `Found.MinBond` (a one-sided crush founds nothing), ambition
+and sociability above their thresholds, a minimum level, no guild yet, and
+the server-wide cooldown elapsed. Its founding circle are the bots it is
+actually bonded to. Recruitment afterwards weighs the overlap of playing
+windows, so a guild drifts towards one schedule the way a real one does.
+
+**`AiPlayerbot.RandomBotGuildCount` must be `0`.** Both mechanisms at once
+makes no sense. The module checks the value at every start and complains
+loudly, and `apply-playerbots-patches.ps1` checks it before you build —
+neither ever writes `playerbots.conf`; that file belongs to another module.
 
 ## Requirements
 
@@ -83,13 +155,30 @@ The SQL ships twice on purpose — under `base/` for a fresh database, under
 `updates/` for one that is already populated. Changing a table means
 touching both files.
 
+> **Upgrading from 1.x: the migration is mandatory.** The six layers added
+> fourteen columns to `bot_social_profile` and two to `bot_social_guild`.
+> `data/sql/db-characters/updates/20260830_00_bot_social_layers.sql` runs
+> through AzerothCore's UpdateFetcher on the next start; if you keep SQL
+> updates switched off, apply it by hand. Without it the module cannot
+> load its profiles.
+>
+> Existing profiles keep their bonds, reputation and activity. Their new
+> columns start on the column defaults, and the module rolls the real
+> values the next time each bot does something social — recognisable by
+> `stage_since = 0`. Until then those rows are *not* representative, so
+> leave them out of any statistic you build:
+>
+> ```sql
+> SELECT COUNT(*) FROM bot_social_profile WHERE stage_since = 0;
+> ```
+
 ## In-game commands
 
 ```
 .social stats            Overview: bonds, friendships, grudges, guilds
 .social bonds <name>     This character's strongest bonds
 .social grudges <name>   The worst ones
-.social who <name>       Profile: archetype, skill, sociability, reputation
+.social who <name>       Full profile: all six layers, skill, reputation
 ```
 
 ## Configuration
@@ -111,9 +200,24 @@ Every key carries the `BotSocial.` prefix and is commented individually in
 | Ranks | promotions inside the guild |
 | Schism | when a clique walks out together |
 | Skill per bot | effect of `skill_tier` — **needs the patch below** |
+| Layers | `Layers.Enable`, `Traits.*`, `Sadism.*` |
+| Available time | `Time.Weight*` (four profiles), `Time.Minutes*`, `Time.Instance*` |
+| Anchor | `Anchor.MinDungeons`, `Anchor.MinMinutes` |
+| Founding | `Found.*` — thresholds, cooldown, guild cap |
 
 All defaults are conservative: `Enable`, `Schism.Enable` and
 `ReactDelay.Enable` ship as `0`.
+
+Two settings are worth understanding rather than turning:
+
+`Time.Weight*` are the four availability profiles, `40 / 35 / 13 / 12`.
+They need not add up to 100 — they are weights, not percentages — but it
+reads better if they do.
+
+`FlushMaxStatements` (default `2000`) caps how many rows go into one write
+transaction. `0` means no limit, and on a large server that is a real
+hazard: after a mass migration half the population lands in a single
+transaction and holds the character database while it runs.
 
 ## Optional: make skill matter (patch for mod-playerbots)
 
@@ -126,33 +230,29 @@ displays.
 feel: reaction time. A poor player hesitates, a good one is quick — in
 combat, while resting, in battlegrounds.
 
-Two ways in; either one is enough.
+Run the installer from the module folder:
 
-**Way 1, clean: apply the patch.** Still works when mod-playerbots has
-moved on, as long as nobody touched the same function.
+```powershell
+.pply-playerbots-patches.ps1 -Check    # test only, changes nothing
+.pply-playerbots-patches.ps1           # apply
+.pply-playerbots-patches.ps1 -Revert   # undo
+```
+
+It finds `mod-playerbots` next to this module, applies every patch under
+`patches/`, and is safe to run twice — an already-applied patch is detected
+and skipped. Double-clicking `apply-playerbots-patches.bat` does the same.
+
+By hand, if you prefer:
 
 ```bash
 cd azerothcore-wotlk/modules/mod-playerbots
 git apply ../mod-bot-social/patches/01-playerbots-reactdelay.patch
 ```
 
-**Way 2, without git: copy the finished file.** Under `patches/` it sits in
-the very subfolder it belongs in — the path is the instruction:
-
-```
-mod-bot-social/patches/mod-playerbots/src/Bot/PlayerbotAI.cpp
-                       └────────────────────────────────────┘
-                       copy exactly here, under modules/
-```
-
-So to `modules/mod-playerbots/src/Bot/PlayerbotAI.cpp`, replacing the
-existing file.
-
-> **Check first:** this file matches mod-playerbots `master` at commit
-> `2f7d9f77`. On any other revision you would overwrite someone else's
-> changes — use way 1 then. After copying, `git status` in mod-playerbots
-> must show exactly one modified file; more than that means it was the
-> wrong revision.
+There is deliberately **no pre-patched copy of the file** to fall back on.
+A copy would overwrite whatever mod-playerbots has changed since — silently,
+including fixes you wanted. A patch that no longer fits stops and says so,
+naming the file and the line, and that failure is the useful part.
 
 Then in `mod_bot_social.conf`:
 
@@ -189,9 +289,7 @@ cd azerothcore-wotlk/modules/mod-playerbots
 git apply ../mod-bot-social/patches/02-playerbots-guildcache-nullcheck.patch
 ```
 
-or copy `patches/mod-playerbots/src/Mgr/Guild/PlayerbotGuildMgr.cpp` to
-`modules/mod-playerbots/src/Mgr/Guild/PlayerbotGuildMgr.cpp`, same commit
-check as above (`2f7d9f77`) applies.
+…or let `apply-playerbots-patches.ps1` handle both patches at once.
 
 This one needs no config flag and no module coupling — it only guards a
 null pointer that mod-playerbots itself already checks for the guild object
@@ -225,8 +323,10 @@ two lines above.
 
 **Solution:**
 1. Check your mod-playerbots commit: `git log --oneline -1` in `modules/mod-playerbots/`
-2. If not `2f7d9f77` or close: use the pre-patched file instead (copy from `patches/mod-playerbots/src/Bot/PlayerbotAI.cpp`)
-3. Or manually merge: the patch adds ~80 lines in two places (see comments in patch file)
+2. Look at the conflict: `git apply --3way patches/01-playerbots-reactdelay.patch` leaves conflict markers in the file
+3. Merge by hand — the patch adds ~90 lines in three places (see the comments inside it), then regenerate it:
+   `cmd /c "git -C <playerbots> diff -- src/Bot/PlayerbotAI.cpp > patches/01-playerbots-reactdelay.patch"`
+   (use `cmd /c` for the redirect: PowerShell's own `>` writes UTF-16, which `git apply` cannot read)
 
 ### Config changes don't take effect
 
@@ -287,15 +387,91 @@ Das Modell bildet ein paar Dinge nach, die Menschen tatsächlich tun:
 - **Niemand kennt achthundert Leute.** Eine Dunbar-Grenze kappt die
   schwächsten Bindungen — und bewahrt zugleich die Tabelle vor
   quadratischem Wachstum.
-- **Wer anders spielen will, reibt sich.** Jeder Bot bekommt einen
-  Archetyp (questor, dungeoneer, raider, pvper, gatherer, casual, loner);
-  unpassende Paarungen bekommen pro gemeinsamer Gruppe einen kleinen Abzug.
+- **Wer anders spielen will, reibt sich.** Jeder Bot bekommt eine
+  Tätigkeit (questor, dungeoneer, raider, pvper, gatherer, explorer,
+  collector); unpassende Paarungen bekommen pro gemeinsamer Gruppe einen
+  kleinen Abzug.
 
 Der Graph liegt im Arbeitsspeicher, die Datenbank ist die Sicherung.
 
 **Das Modul linkt nicht gegen mod-playerbots.** Es beobachtet nur
 Kernereignisse und erkennt Bots über `WorldSession::IsBot()`. Ein Update
 von mod-playerbots bricht es deshalb nicht.
+
+## Die sechs Schichten (2.0)
+
+Bis 1.x war ein Bot eine einzige Zahl: ein Archetyp, und alles andere folgte
+daraus. Ein `casual` war automatisch weniger gesellig, ein `raider`
+ehrgeiziger. Genau das gibt die Forschung nicht her — was jemand spielt,
+sagt sehr wenig darüber, wie er ist. Zwei der sieben Archetypen, `casual`
+und `loner`, waren überhaupt keine Tätigkeiten: das eine war ein Zeitplan,
+das andere ein Wesenszug, beide als Tätigkeit verkleidet.
+
+2.0 trennt das auf. Ein Bot besteht jetzt aus sechs unabhängigen Schichten:
+
+| Schicht | Was sie ist | Woher sie kommt |
+|---|---|---|
+| 1 — Tätigkeit | questor, dungeoneer, raider, pvper, gatherer, explorer, collector | gewichteter Wurf |
+| 2 — Wesen | Verträglichkeit, Ehrlichkeit, Gewissenhaftigkeit, Geselligkeit, Ehrgeiz, Sadismus | gewürfelt, unabhängig von Schicht 1 |
+| 3 — Beweggrund für Ausrüstung | Mittel zum Zweck, die Zahl selbst, Zeichen nach außen, Eintrittskarte, Pflicht der Gilde | **abgeleitet**, nie gewürfelt |
+| 4 — Verfügbarkeit | Fensterbeginn, Spanne, Blocklänge, Verlässlichkeit, Unterbrechbarkeit | **gemeinsam** gewürfelt |
+| 5 — Verlauf | Anfang, Aufbau, Meisterschaft, Ausgebrannt, Rückkehr | folgt Ereignissen |
+| 6 — Anker | der eine Mensch, wegen dem jemand einloggt | wird verdient, nie gewürfelt |
+
+Drei davon haben eine Fußnote verdient, weil in jeder eine Falle steckt.
+
+**Schicht 2 ist nicht eine einzige Glocke.** Vier Wesenszüge sind
+normalverteilt um 50. Sadismus nicht: Volkmer und Kollegen (2023,
+vorregistriert, N = 1026) zeigen über Quantilregression, dass Sadismus nur
+die *oberen* Quantile der Trollneigung erklärt — für niedrige Werte sagt er
+nichts. Deshalb liegt die Masse nahe null und ein schmaler Rand liegt hoch.
+Die erste Umsetzung zog aus zwei getrennten Töpfen und ließ zwischen 16 und
+39 gar nichts übrig; in einer lebenden Bevölkerung von 3518 Profilen war
+dieses Band leer, was den Wert in Wahrheit binär macht. Der obere Topf hat
+jetzt einen Verlauf und beginnt direkt über `QuietMax`, sein Exponent ist so
+gewählt, dass der Anteil über `TailFloor` exakt `TailPercent` bleibt.
+Gemessen: 90,6 % ruhig, 4,7 % dazwischen, 4,6 % ab 40.
+
+**Schicht 4 wird gemeinsam gezogen, nicht spaltenweise.** Einzeln gewürfelt
+entstehen unmögliche Menschen — drei Stunden am Stück und trotzdem alle zehn
+Minuten weg. Ein Wurf wählt das Profil, das Profil liefert alle fünf Teile:
+
+| Profil | Fenster beginnt | Block | Verlässlich | Unterbrechbar |
+|---|---|---|---|---|
+| Feierabend | 19–22 | 120–240 min | hoch | selten |
+| Nebenher | 8–21 | 20–75 min | niedrig | ständig |
+| Viel Zeit | 12–18 | 76–200 min | mittel | manchmal |
+| Nachtschicht | 22, 23, 0, 1, 2 | 76–210 min | hoch | selten |
+
+Die Nachtschicht läuft über Mitternacht, und die Deckungsrechnung kommt
+damit zurecht — Fenster werden modulo 24 verglichen. Ohne sie endete der
+Serverabend um 22 Uhr, und zwischen 23 und 7 begann kein einziges Fenster:
+für ein Spiel, dessen echter Gipfel bis nach Mitternacht läuft, war das die
+gröbste Lücke der ganzen Schicht.
+
+**Schicht 3 wird abgeleitet, nie gewürfelt.** Würfeln erzeugt Kombinationen,
+die es nicht gibt — einen Questgänger, dessen Ausrüstung eine
+*Eintrittskarte ins Raiden* ist. Sie folgt aus Tätigkeit, Verlauf und
+Gildenzugehörigkeit und wird bei jedem Stufenwechsel neu gesetzt.
+
+## Gilden entstehen aus Cliquen
+
+mod-playerbots legt beim Serverstart Gilden an und steckt beliebige Bots
+hinein — Stufe-1-Charaktere, die sich nie begegnet sind. Dieses Modul
+ersetzt das.
+
+Ein Bot gründet erst, wenn alles zugleich zutrifft: genug **beidseitige**
+Bindungen über `Found.MinBond` (eine einseitige Schwärmerei gründet nichts),
+Ehrgeiz und Geselligkeit über ihren Schwellen, eine Mindeststufe, noch keine
+Gilde, und die serverweite Wartezeit ist um. Der Gründungskreis sind die
+Bots, mit denen er tatsächlich verbunden ist. Die Anwerbung danach gewichtet
+die Überschneidung der Spielfenster — so driftet eine Gilde auf einen
+gemeinsamen Zeitplan zu, wie eine echte auch.
+
+**`AiPlayerbot.RandomBotGuildCount` muss `0` sein.** Beides zusammen ergibt
+keinen Sinn. Das Modul prüft den Wert bei jedem Start und meldet sich laut,
+und `apply-playerbots-patches.ps1` prüft ihn schon vor dem Bauen — geschrieben
+wird `playerbots.conf` von beiden nie, die Datei gehört einem fremden Modul.
 
 ## Voraussetzungen
 
@@ -348,13 +524,31 @@ Das SQL liegt bewusst zweimal vor — unter `base/` für eine frische
 Datenbank, unter `updates/` für eine bereits befüllte. Wer eine Tabelle
 ändert, muss beide Dateien anfassen.
 
+> **Umstieg von 1.x: die Wanderung ist Pflicht.** Die sechs Schichten haben
+> `bot_social_profile` um vierzehn und `bot_social_guild` um zwei Spalten
+> erweitert.
+> `data/sql/db-characters/updates/20260830_00_bot_social_layers.sql` läuft
+> beim nächsten Start über den UpdateFetcher von AzerothCore; wer
+> SQL-Updates abgeschaltet hat, spielt sie von Hand ein. Ohne sie kann das
+> Modul seine Profile nicht laden.
+>
+> Bestehende Profile behalten Bindungen, Ruf und Tätigkeit. Ihre neuen
+> Spalten stehen zunächst auf den Spaltenvorgaben; die echten Werte würfelt
+> das Modul, sobald der Bot das nächste Mal etwas Soziales tut — zu erkennen
+> an `stage_since = 0`. Bis dahin sind diese Zeilen *nicht* repräsentativ
+> und gehören aus jeder Statistik heraus:
+>
+> ```sql
+> SELECT COUNT(*) FROM bot_social_profile WHERE stage_since = 0;
+> ```
+
 ## Befehle im Spiel
 
 ```
 .social stats            Überblick: Bindungen, Freundschaften, Grolle, Gilden
 .social bonds <Name>     Die stärksten Bindungen dieses Charakters
 .social grudges <Name>   Die schlechtesten
-.social who <Name>       Profil: Archetyp, Können, Geselligkeit, Ruf
+.social who <Name>       Volles Profil: alle sechs Schichten, Können, Ruf
 ```
 
 ## Konfiguration
@@ -376,9 +570,25 @@ Alle Schlüssel tragen das Präfix `BotSocial.` und sind in
 | Ränge | Beförderungen innerhalb der Gilde |
 | Gildenspaltung | wann eine Clique geschlossen austritt |
 | Können pro Bot | Wirkung des `skill_tier` — **braucht den Patch unten** |
+| Schichten | `Layers.Enable`, `Traits.*`, `Sadism.*` |
+| Verfügbare Zeit | `Time.Weight*` (vier Profile), `Time.Minutes*`, `Time.Instance*` |
+| Anker | `Anchor.MinDungeons`, `Anchor.MinMinutes` |
+| Gründung | `Found.*` — Schwellen, Wartezeit, Gildenobergrenze |
 
 Alle Vorgaben sind konservativ: `Enable`, `Schism.Enable` und
 `ReactDelay.Enable` stehen ab Werk auf `0`.
+
+Zwei Einstellungen sollte man eher verstehen als drehen:
+
+`Time.Weight*` sind die vier Verfügbarkeitsprofile, `40 / 35 / 13 / 12`.
+Sie müssen sich nicht zu 100 addieren — es sind Gewichte, keine Prozente —
+aber es liest sich besser, wenn sie es tun.
+
+`FlushMaxStatements` (Vorgabe `2000`) begrenzt, wie viele Zeilen in einer
+Schreibtransaktion landen. `0` heißt keine Grenze, und auf einem großen
+Server ist das eine echte Gefahr: nach einer Wanderung landet sonst die
+halbe Bevölkerung in einer einzigen Transaktion und hält die
+Charakterdatenbank fest, solange sie läuft.
 
 ## Optional: Können wirkt (Patch für mod-playerbots)
 
@@ -391,35 +601,31 @@ Datenbank, die `.social who` anzeigt.
 Eigenschaft: die Reaktionszeit. Ein schlechter Spieler zögert, ein guter
 ist flink — im Kampf, beim Rasten, im Schlachtfeld.
 
-Es liegen zwei Wege bei — beide führen zum selben Ergebnis, einer davon
-reicht.
+Das Installationsskript aus dem Modulordner starten:
 
-**Weg 1, sauber: den Patch anwenden.** Funktioniert auch dann noch, wenn
-mod-playerbots inzwischen weitergezogen ist, solange niemand dieselbe
-Funktion angefasst hat.
+```powershell
+.pply-playerbots-patches.ps1 -Check    # nur prüfen, ändert nichts
+.pply-playerbots-patches.ps1           # anwenden
+.pply-playerbots-patches.ps1 -Revert   # zurücknehmen
+```
+
+Es findet `mod-playerbots` neben diesem Modul, wendet alle Patches aus
+`patches/` an und darf zweimal laufen — ein bereits angewendeter Patch wird
+erkannt und übersprungen. Ein Doppelklick auf
+`apply-playerbots-patches.bat` tut dasselbe.
+
+Von Hand, wer lieber selbst zusieht:
 
 ```bash
 cd azerothcore-wotlk/modules/mod-playerbots
 git apply ../mod-bot-social/patches/01-playerbots-reactdelay.patch
 ```
 
-**Weg 2, ohne Git: die fertige Datei kopieren.** Unter `patches/` liegt sie
-im selben Unterordner, in den sie gehört — der Pfad ist die Anleitung:
-
-```
-mod-bot-social/patches/mod-playerbots/src/Bot/PlayerbotAI.cpp
-                       └────────────────────────────────────┘
-                       genau hierhin kopieren, unter modules/
-```
-
-Also nach `modules/mod-playerbots/src/Bot/PlayerbotAI.cpp`, die vorhandene
-Datei ersetzen.
-
-> **Vorher prüfen:** Diese Datei entspricht mod-playerbots `master` beim
-> Commit `2f7d9f77`. Wer eine andere Fassung hat, überschreibt damit
-> fremde Änderungen — in dem Fall Weg 1 nehmen. Ein `git status` in
-> mod-playerbots zeigt hinterher genau eine geänderte Datei; steht dort
-> mehr, war es die falsche Fassung.
+Eine **fertig geänderte Kopie der Datei liegt bewusst nicht bei**. Eine
+Kopie überschreibt alles, was mod-playerbots seither an dieser Datei
+geändert hat — stillschweigend, Fehlerbehebungen eingeschlossen. Ein Patch,
+der nicht mehr passt, hält an und sagt es, mit Datei und Zeile. Genau dieses
+Scheitern ist das Nützliche daran.
 
 Dann in `mod_bot_social.conf`:
 
@@ -459,9 +665,8 @@ cd azerothcore-wotlk/modules/mod-playerbots
 git apply ../mod-bot-social/patches/02-playerbots-guildcache-nullcheck.patch
 ```
 
-oder `patches/mod-playerbots/src/Mgr/Guild/PlayerbotGuildMgr.cpp` nach
-`modules/mod-playerbots/src/Mgr/Guild/PlayerbotGuildMgr.cpp` kopieren,
-gleicher Commit-Check wie oben (`2f7d9f77`).
+…oder `apply-playerbots-patches.ps1` beide Patches auf einmal erledigen
+lassen.
 
 Dieser Patch braucht keinen Konfig-Schalter und keine Modul-Kopplung — er
 sichert nur einen Nullzeiger ab, den mod-playerbots für das Gildenobjekt
@@ -495,8 +700,10 @@ zwei Zeilen darüber bereits selbst prüft.
 
 **Lösung:**
 1. Commit von mod-playerbots prüfen: `git log --oneline -1` in `modules/mod-playerbots/`
-2. Falls nicht `2f7d9f77` oder nah dran: fertige Datei stattdessen kopieren (aus `patches/mod-playerbots/src/Bot/PlayerbotAI.cpp`)
-3. Oder manuell einpflegen: Patch fügt ~80 Zeilen an zwei Stellen ein (siehe Kommentare in Patch-Datei)
+2. Konflikt ansehen: `git apply --3way patches/01-playerbots-reactdelay.patch` hinterlässt Konfliktmarken in der Datei
+3. Von Hand einpflegen — der Patch fügt ~90 Zeilen an drei Stellen ein (siehe die Kommentare darin), danach neu erzeugen:
+   `cmd /c "git -C <playerbots> diff -- src/Bot/PlayerbotAI.cpp > patches/01-playerbots-reactdelay.patch"`
+   (die Umleitung über `cmd /c`: PowerShells eigenes `>` schreibt UTF-16, und das kann `git apply` nicht lesen)
 
 ### Config-Änderungen wirken nicht
 
