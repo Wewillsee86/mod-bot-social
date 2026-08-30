@@ -343,6 +343,28 @@ BotSocial.Decay.Negative = 1
 BotSocial.Decay.NegativeDivisor = 3
 
 #
+#    BotSocial.Decay.CatchUpMax
+#        Wie viele versaeumte Verblassen-Runden ein Serverstart hoechstens
+#        nachholt.
+#
+#        Das Verblassen und die Dunbar-Grenze hingen an einem Zeitgeber im
+#        Arbeitsspeicher, der bei jedem Start wieder bei null anfaengt. Bei
+#        IntervalHours = 24 heisst das: ein Server, der oefter als einmal
+#        am Tag neu startet, hat BEIDES NIE ausgefuehrt. Gemessen war das
+#        an Bots mit 105 Bindungen bei MaxBondsPerBot = 50 und an
+#        Zuneigungswerten bis 322, die nie etwas nach unten zog.
+#
+#        Der Merkposten steht jetzt in bot_social_event unter der Art
+#        'maintenance' - eine Uhr in der Datenbank statt im Prozess. Beim
+#        Start wird nachgeholt, was faellig war, hoechstens aber so viele
+#        Runden wie hier steht. Ohne Deckel wuerde ein Server, der einen
+#        Monat aus war, die ganze Sozialgeschichte auf einen Schlag
+#        glattziehen.
+#        Vorgabe: 7
+#
+BotSocial.Decay.CatchUpMax = 7
+
+#
 #   BotSocial.MaxBondsPerBot
 #       Niemand kennt achthundert Leute. Über diesem Wert fallen die
 #       schwächsten Bindungen aus dem Gedächtnis — Freunde und
@@ -1062,24 +1084,31 @@ BotSocial.Found.MaxGuilds = 60
 #        hoechste 322) sah der Schnitt so aus - Bots mit vier beidseitigen
 #        Bekannten ueber der Schwelle:
 #
-#             40 -> 2354 Anwaerter    das waere jeder
-#             60 -> 1833
-#             80 ->   57              <- Vorgabe
+#             40 -> 2357 Anwaerter    das waere jeder
+#             60 -> 1835
+#             70 ->  262              <- Vorgabe
+#             80 ->   59
 #            100 ->    2
 #            150 ->    0
 #
-#        Der Bruch zwischen 60 und 80 ist der Punkt, an dem aus einer
-#        Clique der Normalfall wird. Von den 57 muessen ausserdem Ehrgeiz,
-#        Geselligkeit, Stufe und gleichzeitige Anwesenheit stimmen - es
-#        bleiben wenige, und das ist gewollt.
+#        Die Klippe liegt zwischen 60 und 70, nicht zwischen 60 und 80 -
+#        das war ohne den Zwischenschritt nicht zu sehen. Bei 80 blieben
+#        von 59 Cliquen nach Ehrgeiz, Geselligkeit, Stufe und
+#        gleichzeitiger Anwesenheit genau DREI uebrig, und drei Bots, die
+#        sich gleichzeitig einloggen muessen, gruenden praktisch nie. Nach
+#        einem Tag Laufzeit stand die Gildenzahl unveraendert auf null.
+#
+#        70 gibt rund die zehnfache Zahl an Cliquen. Selten bleibt es
+#        trotzdem: die Wartezeit laesst hoechstens eine Gilde je Stunde zu,
+#        und die uebrigen Schwellen sieben weiter.
 #
 #        Zusaetzlich darf sich in der Runde niemand meiden: zwei Leute,
 #        die einander nicht ausstehen, gruenden nichts zusammen.
-#        Vorgabe: 4 / 80
+#        Vorgabe: 4 / 70
 #
 
 BotSocial.Found.MinFriends = 4
-BotSocial.Found.MinBond = 80
+BotSocial.Found.MinBond = 70
 
 #
 #    BotSocial.Found.MinAmbition / .MinSociability / .MinLevel

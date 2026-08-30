@@ -70,6 +70,10 @@ namespace BotSocial
         int32  decayPositive        = 1;
         int32  decayNegative        = 1;
         uint32 decayNegativeDivisor = 3; // grudges decay 1/3 as often
+        // Hoechstzahl der Runden, die ein Serverstart nachholt. Ohne
+        // Deckel wuerde ein Server, der einen Monat aus war, alles auf
+        // einen Schlag glattziehen.
+        uint32 decayCatchUpMax      = 7;
 
         // ---- Dunbar ----
         uint32 maxBondsPerBot   = 50;

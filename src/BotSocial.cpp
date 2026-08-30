@@ -236,6 +236,10 @@ namespace
     uint32 InterruptibilityOf(uint32 guid);
     uint32 ConscientiousnessOf(uint32 guid);
 
+    // Steht unter den Zeitgebern, wird aber schon von der nachgeholten
+    // Wartung weiter oben gebraucht.
+    void DecayTick();
+
     void Apply(uint32 from, uint32 to, Touch const& t)
     {
         if (!from || !to || from == to)
@@ -849,6 +853,75 @@ namespace
         if (_cfg.debug)
             LOG_INFO("module", "BotSocial: {} schwache Bindungen vergessen",
                      dropped.size());
+    }
+
+    // ---- Wartung nachholen ---------------------------------------------
+
+    // Verblassen und Dunbar-Grenze hingen an EINEM Zeitgeber, der bei
+    // jedem Serverstart wieder bei null anfaengt. Bei Decay.IntervalHours
+    // = 24 heisst das: auf einem Server, der oefter als einmal am Tag neu
+    // startet, ist beides NIE gelaufen. Messbar war das an Bots mit 105
+    // Bindungen bei MaxBondsPerBot = 50 und an Zuneigungswerten, die
+    // nichts mehr nach unten zog.
+    //
+    // Die Uhr gehoert also in die Datenbank, nicht in den Prozess. Eine
+    // eigene Tabelle waere dafuer zu viel: bot_social_event hat einen
+    // Zeitstempel und eine Art, das reicht als Merkposten.
+    void MarkMaintenance(uint32 rounds)
+    {
+        LogEvent(0, 0, "maintenance", std::to_string(rounds) + " Runden",
+                 int32(rounds));
+    }
+
+    void CatchUpMaintenance()
+    {
+        if (!_cfg.decayIntervalHours)
+            return;
+
+        uint64 const interval = uint64(_cfg.decayIntervalHours) * 3600u;
+
+        QueryResult res = CharacterDatabase.Query(
+            "SELECT UNIX_TIMESTAMP(MAX(created_at)) FROM bot_social_event "
+            "WHERE kind = 'maintenance'");
+
+        uint64 const now = uint64(time(nullptr));
+        uint64 last = 0;
+
+        if (res)
+        {
+            Field* f = res->Fetch();
+            if (!f[0].IsNull())
+                last = f[0].Get<uint64>();
+        }
+
+        // Kein Merkposten: erster Start mit dieser Fassung. Einmal
+        // aufraeumen und die Uhr stellen - sonst holt der naechste Start
+        // eine Ewigkeit auf, die es nie gab.
+        uint32 rounds = 1;
+
+        if (last && now > last)
+            rounds = uint32(std::min<uint64>((now - last) / interval,
+                                             _cfg.decayCatchUpMax));
+        else if (last)
+            rounds = 0;   // Uhr steht in der Zukunft: nichts tun
+
+        if (!rounds)
+        {
+            if (_cfg.debug)
+                LOG_INFO("module", "BotSocial: Wartung nicht faellig");
+            return;
+        }
+
+        for (uint32 i = 0; i < rounds; ++i)
+            DecayTick();
+
+        EnforceDunbar();
+        MarkMaintenance(rounds);
+
+        LOG_INFO("module",
+                 "mod-bot-social: Wartung nachgeholt - {} Runde(n) "
+                 "Verblassen, danach die Dunbar-Grenze durchgesetzt.",
+                 rounds);
     }
 
     // ---- decay ---------------------------------------------------------
@@ -2388,6 +2461,7 @@ void LoadConfig()
     _cfg.decayPositive        = sConfigMgr->GetOption<int32>("BotSocial.Decay.Positive", 1);
     _cfg.decayNegative        = sConfigMgr->GetOption<int32>("BotSocial.Decay.Negative", 1);
     _cfg.decayNegativeDivisor = sConfigMgr->GetOption<uint32>("BotSocial.Decay.NegativeDivisor", 3);
+    _cfg.decayCatchUpMax      = sConfigMgr->GetOption<uint32>("BotSocial.Decay.CatchUpMax", 7);
 
     _cfg.maxBondsPerBot = sConfigMgr->GetOption<uint32>("BotSocial.MaxBondsPerBot", 50);
 
@@ -2846,6 +2920,15 @@ void OnResurrected(Player* player)
 
     Touch helper;
     helper.affinity = _cfg.gainResurrector;
+    // Der Gegenbuchung fehlte bisher JEDER Zaehler: Zuneigung wuchs, ohne
+    // dass eine Spalte mitging. Auf einem Server, auf dem Bots staendig
+    // sterben, laeuft eine Bindung damit ueber jede aus den Zaehlern
+    // erklaerbare Obergrenze hinaus - und keine Pruefung sieht, woher.
+    //
+    // -1 ist dabei nicht nur ein Zaehler, sondern die richtige Richtung:
+    // favours_owed ist vorzeichenbehaftet, positiv heisst 'bot_guid
+    // schuldet other_guid etwas'. Wer hilft, hat etwas GUT.
+    helper.favours  = -1;
     helper.countsAsMeeting = false;
     helper.kind     = "resurrector";
     helper.mapId    = grateful.mapId;
@@ -3114,8 +3197,16 @@ void Startup()
     if (_cfg.traceRetentionDays > 0)
         CharacterDatabase.Execute(
             "DELETE FROM bot_social_event "
-            "WHERE created_at < NOW() - INTERVAL {} DAY",
+            "WHERE created_at < NOW() - INTERVAL {} DAY "
+            // Der Wartungs-Merkposten ist keine Beobachtung, sondern eine
+            // Uhr. Faellt er der Aufraeumung zum Opfer, faengt das
+            // Nachholen bei jedem Start wieder von vorne an.
+            "AND kind <> 'maintenance'",
             _cfg.traceRetentionDays);
+
+    // Muss VOR RegisterBotGuilds laufen: die Gruendung liest Bindungen,
+    // und die sollen zuerst den faelligen Zerfall hinter sich haben.
+    CatchUpMaintenance();
 
     RegisterBotGuilds();
 
@@ -3216,6 +3307,9 @@ void Update(uint32 diff)
         _decayTimer = 0;
         DecayTick();
         EnforceDunbar();
+        // Merkposten setzen, sonst holt der naechste Serverstart eine
+        // Runde nach, die gerade eben gelaufen ist.
+        MarkMaintenance(1);
     }
 }
 
